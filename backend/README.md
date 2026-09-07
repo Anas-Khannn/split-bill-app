@@ -61,6 +61,11 @@ backend/
 │   │       ├── settlement.routes.ts
 │   │       ├── settlement.service.ts
 │   │       └── validators.ts
+│   │   └── activity/              # Activity feed & audit event feature module
+│   │       ├── activity.controller.ts
+│   │       ├── activity.repository.ts
+│   │       ├── activity.service.ts
+│   │       └── validators.ts
 │   ├── routes/
 │   │   ├── health.ts             # GET /health, GET /health/ready
 │   │   ├── index.ts              # /api/v1 router
@@ -84,6 +89,10 @@ backend/
 │   ├── split.util.test.ts        # Split calculation unit tests
 │   ├── settlement.api.test.ts    # Balance & settlement endpoint integration tests (mocked DB)
 │   ├── settlement.service.test.ts# Balance & settlement service unit tests (mocked repository)
+│   ├── activity.api.test.ts      # Activity endpoint integration tests (mocked DB)
+│   ├── activity.service.test.ts  # Activity service unit tests (mocked repository)
+│   ├── activity.creation.test.ts # Activity event creation tests (mocked repositories)
+│   ├── activity.transaction.test.ts # Activity transactional-consistency tests (mocked DB)
 │   ├── balance.util.test.ts      # Balance calculation unit tests
 │   ├── config.test.ts            # Configuration validation tests
 │   ├── errors.test.ts            # Error class unit tests
@@ -224,7 +233,7 @@ All feature endpoints are mounted under `/api/v1`:
 - `/api/v1/groups` — Group management & membership
 - `/api/v1/expenses` — Expense tracking & split calculation
 - `/api/v1/settlements` — Settlement recording & balance calculation
-- `/api/v1/activity` — Activity feed (not yet implemented)
+- `/api/v1/groups/:groupId/activity` — Group activity feed & audit events
 
 ## Authentication API
 
@@ -690,6 +699,84 @@ subclasses (`BadRequestError`, `ForbiddenError`, `NotFoundError`) that the
 centralized error handler serializes. Settlements are recorded as a single atomic
 Prisma write.
 
+## Activity API
+
+Activity endpoints live under `/api/v1/groups/:groupId/activity`. Every activity
+endpoint requires authentication via the `Authorization: Bearer <jwt>` header.
+
+### Purpose
+
+Activity events form a historical, auditable record of meaningful actions within
+a group (group creation, members added, expenses added, settlements recorded).
+They are **not** the source of truth for financial calculation. Balances remain
+derived from expenses, splits, and settlements only.
+
+### Authorization Model
+
+- Any **group member** may view the group's activity feed.
+- **Non-members** (or members of another group) receive HTTP 403, preventing
+  cross-group activity access / IDOR.
+- Activity event actors are always recorded from the authenticated requester
+  (`req.userId`), never from request-body fields.
+
+### GET /api/v1/groups/:groupId/activity
+
+Returns a paginated list of the group's activity events, newest first. The
+authenticated requester must be a member of the group.
+
+Query parameters:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `page` | integer | `1` | Page number, 1-based |
+| `limit` | integer | `20` | Events per page, `1`–`50` |
+
+- `200` — returns `{ success, data: { events }, pagination }`
+- `400` — validation failed (invalid page/limit, excessive limit, or unknown parameters)
+- `401` — missing/invalid token
+- `403` — authenticated user is not a member
+- `404` — group does not exist
+
+Response (200):
+
+```json
+{
+  "success": true,
+  "data": {
+    "events": [
+      {
+        "id": "<uuid>",
+        "groupId": "<group-uuid>",
+        "userId": "<actor-uuid>",
+        "type": "EXPENSE_ADDED",
+        "message": "added the expense \"Dinner\"",
+        "amountMinorUnits": 1000,
+        "currencyCode": "PKR",
+        "occurredAt": "...",
+        "createdAt": "...",
+        "user": { "id": "<uuid>", "name": "Ahmed Raza", "email": "ahmed@example.com" }
+      }
+    ]
+  },
+  "pagination": { "page": 1, "limit": 20, "total": 12 }
+}
+```
+
+Supported `type` values: `GROUP_CREATED`, `MEMBER_ADDED`, `EXPENSE_ADDED`,
+`SETTLEMENT_ADDED`. Events are filtered by `groupId` and paginated at the
+database level; only the actor's `id`, `name`, and `email` are returned — never
+a password hash or other sensitive authentication data.
+
+### Activity Internals
+
+The module lives under `src/modules/activity/` and follows the same layered
+architecture as the other modules. Activity reads go through
+`ActivityService.getGroupActivity` with database-level filtering, ordering, and
+pagination. Activity writes are emitted inside the *same* Prisma transactions as
+the domain operations that produce them (group creation, member add, expense
+creation, settlement creation), so a domain record can never be committed
+without its corresponding activity event.
+
 ## Database Schema
 
 The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as the datasource provider.
@@ -777,16 +864,17 @@ Routes
 ```
 
 Each feature lives under `src/modules/<feature>/`. The `auth`, `groups`,
-`expenses`, and `settlements` modules are the reference examples. Controllers
-parse the validated request and delegate to the service; the service owns rules
-(duplicate-email detection, password verification, token signing, group
-ownership/membership authorization, expense split validation, balance derivation,
-settlement membership rules) and throws application errors that the centralized
-error handler converts to the standard error response.
+`expenses`, `settlements`, and `activity` modules are the reference examples.
+Controllers parse the validated request and delegate to the service; the service
+owns rules (duplicate-email detection, password verification, token signing,
+group ownership/membership authorization, expense split validation, balance
+derivation, settlement membership rules, activity authorization) and throws
+application errors that the centralized error handler converts to the standard
+error response.
 
 ## Current Implementation Status
 
-Implemented so far (auth + groups + expenses + balances/settlements foundation):
+Implemented so far (auth + groups + expenses + balances/settlements + activity feed):
 
 - TypeScript project configuration (strict mode)
 - Express application with middleware (CORS, Helmet, rate limiting, JSON parsing)
@@ -824,7 +912,14 @@ Implemented so far (auth + groups + expenses + balances/settlements foundation):
 - Group membership authorization for settlements (requester, sender, and receiver)
 - Positive-amount and sender-receiver validation for settlements
 - Cross-group access protection for settlement detail (IDOR guard)
-- Test suite (Vitest + Supertest, 191 tests, all passing without a live DB)
+- **Activity API** (`/api/v1/groups/:groupId/activity`)
+- Group membership authorization for activity reads (IDOR guard)
+- Deterministic, database-level ordering and pagination for the activity feed
+- Zod validation for activity query parameters (`page`, `limit`, safe cap)
+- Activity events (`GROUP_CREATED`, `MEMBER_ADDED`, `EXPENSE_ADDED`, `SETTLEMENT_ADDED`)
+  recorded in the same Prisma transactions as the domain operations that produce them
+- Safe actor/user projection (password hashes never exposed)
+- Test suite (Vitest + Supertest, 227 tests, all passing without a live DB)
 
 ## Not Yet Implemented
 
@@ -834,7 +929,8 @@ The following features are **NOT implemented** in this chunk:
 - Email verification / password reset
 - User management / profile update endpoints
 - Expense delete endpoint (creation, list, and detail are implemented)
-- Activity feed generation logic
+- Member-removed activity events (the `ActivityType` enum does not yet include a removal type)
+- Notifications / real-time activity pushes (the feed is read on demand)
 
 These will be built on top of this foundation in subsequent chunks.
 

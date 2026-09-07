@@ -98,14 +98,21 @@ export class SettlementService {
       );
     }
 
-    const settlement = await this.repository.createSettlement({
-      groupId,
-      payerId: input.payerId,
-      payeeId: input.payeeId,
-      amountMinorUnits,
-      currencyCode: "PKR",
-      settledAt: new Date(),
-    });
+    const settlement = await this.repository.createSettlement(
+      {
+        groupId,
+        payerId: input.payerId,
+        payeeId: input.payeeId,
+        amountMinorUnits,
+        currencyCode: "PKR",
+        settledAt: new Date(),
+      },
+      {
+        userId: requesterId,
+        type: "SETTLEMENT_ADDED",
+        message: "recorded a settlement",
+      },
+    );
 
     return this.toDto(settlement);
   }
