@@ -17,6 +17,12 @@ const envSchema = z.object({
   REDIS_URL: z.string().default("redis://localhost:6379"),
   TRUST_PROXY: z.string().default("false"),
   DISTRIBUTED_LOCK_TTL_MS: z.coerce.number().int().positive().default(10000),
+  JOB_QUEUE_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  JOB_QUEUE_BASE_BACKOFF_MS: z.coerce.number().int().positive().default(2000),
+  JOB_QUEUE_MAX_BACKOFF_MS: z.coerce.number().int().positive().default(60000),
+  JOB_QUEUE_LEASE_MS: z.coerce.number().int().positive().default(30000),
+  JOB_QUEUE_PAYLOAD_TTL_MS: z.coerce.number().int().positive().default(86400000),
+  JOB_QUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(100),
 });
 
 export type Env = z.infer<typeof envSchema>;

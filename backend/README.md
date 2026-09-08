@@ -43,6 +43,11 @@ backend/
 │   │   ├── redisClient.ts        # Lazy ioredis client, connect/disconnect, RedisLike contract
 │   │   ├── rateLimitStore.ts     # Redis-backed express-rate-limit store (Lua fixed window)
 │   │   └── distributedLock.ts    # TTL-bounded distributed lock (SET NX PX + Lua release)
+│   ├── queues/                   # Background job queue infrastructure (infra, no domain logic)
+│   │   ├── job.types.ts          # JOB_TYPES allowlist + JobEnvelope shape
+│   │   ├── jobQueue.ts           # Step-by-step Redis queue: enqueue/claim/complete/retry/discard
+│   │   ├── jobRegistry.ts        # Explicit job-type → {schema, process} dispatch registry
+│   │   └── workerRunner.ts       # Poll loop + lease/dispatch/backoff lifecycle per job
 │   ├── modules/
 │   │   ├── auth/                 # Authentication feature module
 │   │   │   ├── auth.controller.ts
@@ -50,6 +55,13 @@ backend/
 │   │   │   ├── auth.routes.ts
 │   │   │   ├── auth.service.ts
 │   │   │   └── validators.ts
+│   │   ├── summary/              # Group summary snapshots (computed by the worker)
+│   │   │   ├── summary.controller.ts
+│   │   │   ├── summary.jobs.ts   # GROUP_SUMMARY_RECOMPUTE handler + payload schema
+│   │   │   ├── summary.repository.ts
+│   │   │   ├── summary.routes.ts
+│   │   │   ├── summary.service.ts
+│   │   │   └── summary.validators.ts
 │   │   └── groups/               # Groups & membership feature module
 │   │       ├── group.controller.ts
 │   │       ├── group.repository.ts
@@ -91,7 +103,8 @@ backend/
 │   │   ├── logger.ts             # Lightweight structured JSON logger
 │   │   └── requestId.ts          # Shared X-Request-Id validation rules (edge + middleware)
 │   ├── app.ts                    # Express application (testable standalone)
-│   └── server.ts                 # Server startup: DB connect + graceful shutdown
+│   ├── server.ts                 # Server startup: DB connect + graceful shutdown
+│   └── worker.ts                 # Worker startup: DB + Redis connect, queue poll loop (fatal on Redis outage)
 ├── tests/
 │   ├── setup.ts                  # Test setup (env config, silent logger)
 │   ├── app.test.ts               # Application + health + 404 tests
@@ -119,6 +132,12 @@ backend/
 │   └── rate-limit.test.ts        # Rate limiting tests (envelope, headers, window reset, per-IP isolation)
 │   └── rate-limit.redis.test.ts  # Redis-backed rate limiting tests (shared state, fail-open, prefixes)
 │   └── distributed-lock.test.ts  # Distributed lock unit tests (token, TTL, release, degraded paths)
+│   └── queue.test.ts             # Job queue unit tests (enqueue, claim/lease, retry/backoff, discard)
+│   └── workerRunner.test.ts      # Worker poll-loop tests (dispatch, validation, retries, graceful stop)
+│   └── summary.jobs.test.ts      # Summary job handler tests (recompute, permanent failure)
+│   └── summary.service.test.ts   # Summary service tests (authorization, enqueue, 500-on-queue-failure)
+│   └── summary.repository.test.ts# Summary repository tests (aggregation, upsert, lookups)
+│   └── summary.api.test.ts       # Group summary endpoint integration tests (202, 403, 404, 500)
 │   └── settlement.lock.test.ts   # Settlement creation under the lock (409 conflict, degrade, success)
 │   └── edge.test.ts              # Edge layer tests (trust proxy, URL/body/request-ID guard, 413)
 │   └── helpers/
@@ -137,7 +156,8 @@ backend/
 
 - Node.js >= 18
 - PostgreSQL (required for database features and migrations)
-- Redis (optional at runtime; required for distributed rate limiting/locking)
+- Redis (optional for the API server; **required** for distributed rate
+  limiting/locking and for the background worker process)
 - npm
 
 ## Installation
@@ -166,6 +186,12 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string for distributed rate limiting/locking. Never commit one containing a password. |
 | `TRUST_PROXY` | No | `false` | Reverse-proxy trust level for `req.ip`. Use `true`/`1` (first hop), a hop count, or an Express value (`loopback`, subnet, ...). Leave `false` when no proxy is deployed. |
 | `DISTRIBUTED_LOCK_TTL_MS` | No | `10000` | TTL of distributed locks in milliseconds. Must exceed the longest protected operation. |
+| `JOB_QUEUE_MAX_ATTEMPTS` | No | `5` | Retry budget for background jobs before they are discarded. |
+| `JOB_QUEUE_BASE_BACKOFF_MS` | No | `2000` | First-retry delay for a failed background job (exponential). |
+| `JOB_QUEUE_MAX_BACKOFF_MS` | No | `60000` | Cap on a single job's retry delay. |
+| `JOB_QUEUE_LEASE_MS` | No | `30000` | In-flight lease length for a claimed job; must exceed the longest job. |
+| `JOB_QUEUE_PAYLOAD_TTL_MS` | No | `86400000` | TTL of a queued job payload; must exceed the full retry horizon. |
+| `JOB_QUEUE_POLL_INTERVAL_MS` | No | `100` | Idle poll interval of the worker process. |
 
 ### Setting Up Your Local Database
 
@@ -193,8 +219,10 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 
 ```bash
 npm run dev              # Start development server with hot-reload
+npm run worker           # Start the background worker (tsx, development)
 npm run build            # Compile TypeScript to dist/
 npm start                # Run compiled server from dist/
+npm run start:worker     # Run compiled worker from dist/
 npm test                 # Run test suite (Vitest)
 npm run test:watch       # Run tests in watch mode
 npm run test:coverage    # Run tests with coverage
@@ -327,15 +355,19 @@ limiter, so they are subject to both counters.
 
 ## Redis Infrastructure
 
-Redis is used for two cross-instance concerns and is optional at runtime. It is
+Redis supports three cross-instance concerns. It is optional at runtime for the
+**API server** — if Redis is unreachable the server degrades (in-memory rate
+limiting, uncoordinated locks) and stays up — but it is **required** by the
+**worker process**, which cannot move jobs without a queue transport. Redis is
 accessed only through the narrow `RedisLike` contract in
 `src/redis/redisClient.ts` (a single lazy ioredis client, created with
 `enableOfflineQueue: false` so commands fail fast instead of queueing), so tests
 can inject an in-memory fake — the test suite runs without a live Redis server.
 
-- `connectRedis()` runs at startup and is **non-fatal**: if Redis is
-  unreachable the server keeps serving with degraded behavior (in-memory rate
-  limiting, uncoordinated locks) and every degradation is logged.
+- `connectRedis()` runs at startup and is **non-fatal for the API server**: if
+  Redis is unreachable the server keeps serving with degraded behavior
+  (in-memory rate limiting, uncoordinated locks) and every degradation is
+  logged. The worker treats a failed Redis connect as **fatal**.
 - The client handles connection errors and auto-reconnect internally; the
   connection string itself is never logged because it may embed credentials.
 
@@ -366,6 +398,60 @@ Currently applied to **settlement creation** with the group-scoped key
 `lock:settlement:group:{groupId}`: concurrent settlements in the same group (one
 shared balance book) are serialized and made deterministic, while settlements in
 different groups never contend.
+
+## Background Job Queue & Worker
+
+Long-running, non-CRITICAL work runs in a separate **worker process**
+(`src/worker.ts`, started with `npm run worker`) against a Redis-backed queue.
+The API server enqueues jobs and returns immediately; the worker claims them off
+the queue and performs the work against PostgreSQL.
+
+Infrastructure lives in `src/queues/`:
+
+- `job.types.ts` — the `JOB_TYPES` allowlist and the `JobEnvelope` wire shape.
+  Type strings are never built from user input; the worker dispatches through a
+  static registry keyed by this union.
+- `jobQueue.ts` — the queue primitive. Enqueuing writes the serialized envelope
+  under `job:data:{jobId}` (with a TTL) and inserts `jobId` into the sorted set
+  `job:queue:{type}` scored by the next-attempt timestamp. Claiming runs a Lua
+  script that reads the earliest due member (`ZRANGEBYSCORE -inf <now> LIMIT 0 1`)
+  and only succeeds once the claimant holds the in-flight lease
+  `job:inflight:{jobId}` (`SET ... NX PX`). The member stays in the sorted set
+  until the job completes, is discarded, or its payload expires.
+- `jobRegistry.ts` — the explicit `Record<JobType, JobRegistration>` mapping
+  each type to its Zod payload schema and `process` handler. TypeScript enforces
+  that every declared type has a handler.
+- `workerRunner.ts` — the poll loop. Each tick polls every registered type,
+  validates payloads with the registration's Zod schema **before** running any
+  domain code, and executes the handler.
+
+Delivery is **at-least-once**:
+
+- **Success** → the job is `complete()`d (removed from the sorted set, payload,
+  and lease).
+- **Transient failure** (handler throws) → the failed attempt count is
+  incremented on the payload and the member is re-scored to
+  `now + backoff`, where backoff grows `base × 2^(n-1)` up to
+  `maxBackoffMs`. When the attempt budget (`maxAttempts`) is exhausted the job
+  is discarded.
+- **Permanent failure** (`PermanentJobFailureError`) → discarded immediately
+  (used, for example, when the target resource no longer exists).
+- **Malformed queued member** → the lease and payload are cleaned up and the
+  member is discarded with a warning; the poll loop keeps running.
+- **Worker crash mid-job** → the member remains in the sorted set; once the
+  in-flight lease (`leaseMs`) expires, another worker reclaims and retries it.
+
+Handlers must therefore be idempotent. The current workload, group summary
+recomputation, satisfies this by upserting a single `GroupSummary` row keyed on
+the unique `groupId`.
+
+The worker connects to the database and Redis at startup and **fails fast** if
+either is unavailable (unlike the API server, it has no degraded mode). On
+`SIGINT`/`SIGTERM` it stops polling, waits for the currently in-flight job to
+finish, then disconnects cleanly. Jobs carry the enqueuing request's
+`requestId` in their envelope so worker logs correlate back to the HTTP request
+that queued them. Only allowed job payloads, which carry no secrets or tokens,
+are ever stored in Redis.
 
 ## Edge Layer / Gateway
 
@@ -403,6 +489,7 @@ All feature endpoints are mounted under `/api/v1`:
 - `/api/v1/expenses` — Expense tracking & split calculation
 - `/api/v1/settlements` — Settlement recording & balance calculation
 - `/api/v1/groups/:groupId/activity` — Group activity feed & audit events
+- `/api/v1/groups/:groupId/summary` — Group summary snapshot (read) & recompute (async job)
 
 ## Authentication API
 
@@ -1076,6 +1163,62 @@ the domain operations that produce them (group creation, member add, expense
 creation, settlement creation), so a domain record can never be committed
 without its corresponding activity event.
 
+## Group Summary API
+
+Group summary endpoints live under `/api/v1/groups/:groupId/summary`. Every
+endpoint requires authentication via the `Authorization: Bearer <jwt>` header.
+
+### Purpose
+
+The group summary is a **derived, non-authoritative snapshot** (total spent,
+expense count, settlement count, member count) computed in the background by the
+worker and stored in the `GroupSummary` table. The authoritative source of truth
+remains the group's expenses, settlements, and memberships; the snapshot just
+saves clients from recomputing aggregates on every read. Although recomputation
+is currently triggered manually, it runs on the same Redis-backed job queue used
+for all future asynchronous work.
+
+### Authorization Model
+
+- Any **group member** may enqueue a recompute and read the summary.
+- **Non-members** receive HTTP 403, preventing cross-group summary access (IDOR).
+
+### POST /api/v1/groups/:groupId/summary/recompute
+
+Enqueues a `GROUP_SUMMARY_RECOMPUTE` background job. A group member may request
+a refresh; the worker recomputes the aggregates from source tables and upserts
+the snapshot. This endpoint does **not** compute anything synchronously.
+
+- `202` — accepted; returns `{ success, data: { job } }` with the job id, type,
+  and `status: "queued"`. The summary is refreshed asynchronously.
+- `401` — missing/invalid token
+- `403` — authenticated user is not a member
+- `404` — group does not exist
+- `500` — the job could not be queued (Redis unavailable); the request fails
+  cleanly rather than silently accepting a job that would never run
+
+### GET /api/v1/groups/:groupId/summary
+
+Returns the latest computed summary snapshot, if one exists.
+
+- `200` — returns `{ success, data: { summary } }` with `totalSpentMinorUnits`
+  (Number), `expenseCount`, `settlementCount`, `memberCount`, `currencyCode`,
+  and `computedAt`
+- `401` — missing/invalid token
+- `403` — authenticated user is not a member
+- `404` — group does not exist, **or** no summary has been computed yet
+  (`GROUP_SUMMARY_NOT_FOUND`); queue a recompute to generate one
+
+### Summary Internals
+
+The module lives under `src/modules/summary/` and follows the same layered
+architecture as the other modules: the controller authorizes via the service,
+the service enqueues the recompute job (or reads the snapshot), and the
+repository owns the aggregation and upsert. The worker's job handler
+(`summary.jobs.ts`) delegates to the repository's `aggregateGroup` (sum + counts
+via `Promise.all`) and an idempotent `groupSummary.upsert` keyed on the unique
+`groupId` — which is what makes duplicate job deliveries harmless.
+
 ## Database Schema
 
 The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as the datasource provider.
@@ -1093,6 +1236,7 @@ The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as th
 | `ActivityEvent` | Activity feed entry capturing expenses, settlements, group events |
 | `RefreshToken` | JWT refresh token hash for future auth session management |
 | `IdempotencyRecord` | Persistent idempotency deduplication for financial operations |
+| `GroupSummary` | Derived group snapshot (total spent, counts) upserted by the background worker |
 
 ### Enums
 
@@ -1112,6 +1256,7 @@ The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as th
 - **User → Expense (payer), ExpenseSplit, Settlement (payer/payee), ActivityEvent (actor):** `onDelete: Restrict` — prevents deleting a user that has financial records.
 - **User → RefreshToken:** `onDelete: Cascade` — deleting a user removes their refresh tokens.
 - **User → IdempotencyRecord:** `onDelete: Cascade` — deleting a user removes their idempotency keys.
+- **Group → GroupSummary:** `onDelete: Cascade` — deleting a group removes its derived summary snapshot.
 
 ### Indexing
 
@@ -1135,6 +1280,7 @@ The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as th
 | `IdempotencyRecord` | `key` (unique) | Prevent duplicate idempotency keys across all users |
 | `IdempotencyRecord` | `userId` | Look up keys issued to a user |
 | `IdempotencyRecord` | `expiresAt` | Expiry sweep and lifetime queries |
+| `GroupSummary` | `groupId` (unique) | One snapshot per group; single-row upsert target |
 | `User` | `email` (unique) | Login lookup; prevents duplicate emails |
 
 ## Money Representation
@@ -1245,6 +1391,21 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 - Activity events (`GROUP_CREATED`, `MEMBER_ADDED`, `EXPENSE_ADDED`, `SETTLEMENT_ADDED`)
   recorded in the same Prisma transactions as the domain operations that produce them
 - Safe actor/user projection (password hashes never exposed)
+- **Background job queue** (`src/queues/`) — Redis-backed ZSET queue with
+  TTL-bounded payloads and in-flight leases, at-least-once delivery, exponential
+  backoff retries (`JOB_QUEUE_*`), `PermanentJobFailureError` for non-retryable
+  work, an explicit job-type registry, and a poll-loop worker runner with
+  graceful shutdown
+- **Worker process** (`src/worker.ts`, `npm run worker`) — DB + Redis startup
+  (fatal on Redis failure, unlike the API server), request-ID correlation into
+  job logs, clean shutdown that drains in-flight work
+- **Group Summary API** (`/api/v1/groups/:groupId/summary`) — `POST
+  /summary/recompute` enqueues a recompute job (HTTP 202 with a job receipt;
+  500 on queue failure instead of a false accept) and `GET /summary` reads the
+  derived snapshot (404 until the first recompute completes)
+- **GroupSummary model** — derived, non-authoritative snapshot upserted by the
+  worker (idempotent by unique `groupId`); authoritative data stays in
+  expenses/settlements/memberships
 - Test suite (Vitest + Supertest, all passing without a live DB)
 
 ## Not Yet Implemented
@@ -1264,6 +1425,11 @@ The following features are **NOT implemented** in this chunk:
   failure for distributed enforcement (the app degrades, it does not crash).
 - Lock TTL caveat: if a protected operation outlives `DISTRIBUTED_LOCK_TTL_MS`,
   two holders can overlap. Tune the TTL above the worst-case operation time.
+- Automatic group-summary recompute triggers (summary recompute is currently
+  manual — `POST /summary/recompute` — rather than driven automatically by
+  expense/settlement writes).
+- Queue observability tooling (dead-letter inspection, per-type backlog metrics,
+  and job-timing dashboards are not yet built; retries and discards are logged).
 
 These will be built on top of this foundation in subsequent chunks.
 
