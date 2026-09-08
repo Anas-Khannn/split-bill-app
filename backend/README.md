@@ -134,6 +134,7 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 | `CORS_ORIGIN` | No | `http://localhost:3000` | Allowed CORS origin |
 | `JWT_SECRET` | Yes | — | Secret used to sign JSON Web Tokens. Generate a strong random value and never commit it. |
 | `JWT_EXPIRES_IN` | No | `7d` | Access token lifetime (e.g. `7d`, `1h`) |
+| `REFRESH_TOKEN_TTL_DAYS` | No | `30` | Refresh-token session lifetime in days |
 
 ### Setting Up Your Local Database
 
@@ -228,7 +229,7 @@ HTTP status codes use the `HTTP_STATUSES` enum (`src/constants/http-statuses.ts`
 
 All feature endpoints are mounted under `/api/v1`:
 
-- `/api/v1/auth` — Authentication (register, login, current user)
+- `/api/v1/auth` — Authentication (register, login, refresh, logout, current user)
 - `/api/v1/users` — User management (not yet implemented)
 - `/api/v1/groups` — Group management & membership
 - `/api/v1/expenses` — Expense tracking & split calculation
@@ -241,7 +242,7 @@ Authentication endpoints live under `/api/v1/auth`.
 
 ### POST /api/v1/auth/register
 
-Registers a new user and returns an access token.
+Registers a new user and returns an access token plus a refresh token.
 
 Request body:
 
@@ -257,7 +258,7 @@ Request body:
 - `email` — required, valid email
 - `password` — required, at least 8 characters
 
-- `201` — user created; returns `{ success, data: { user, token } }`
+- `201` — user created; returns `{ success, data: { user, token, refreshToken } }`
 - `409` — an account with this email already exists
 - `400` — validation failed
 
@@ -268,17 +269,19 @@ Response (201):
   "success": true,
   "data": {
     "user": { "id": "<uuid>", "name": "Ahmed Raza", "email": "ahmed@example.com" },
-    "token": "<jwt>"
+    "token": "<jwt>",
+    "refreshToken": "<opaque-refresh-token>"
   }
 }
 ```
 
 > The user object never includes `passwordHash` or `password`. Passwords are
-> hashed with **bcrypt** (12 rounds) before storage.
+> hashed with **bcrypt** (12 rounds) before storage. The refresh token is only
+> returned once — only its SHA-256 hash is persisted.
 
 ### POST /api/v1/auth/login
 
-Signs in an existing user and returns an access token.
+Signs in an existing user and returns an access token plus a refresh token.
 
 Request body:
 
@@ -289,9 +292,52 @@ Request body:
 }
 ```
 
-- `200` — success; returns `{ success, data: { user, token } }`
+- `200` — success; returns `{ success, data: { user, token, refreshToken } }`
 - `401` — invalid email or password
 - `400` — validation failed
+
+### POST /api/v1/auth/refresh
+
+Exchanges a valid refresh token for a new access token and a rotated refresh
+token in a single atomic session rotation. The presented refresh token is
+immediately revoked.
+
+Request body:
+
+```json
+{
+  "refreshToken": "<opaque-refresh-token>"
+}
+```
+
+- `200` — success; returns `{ success, data: { user, token, refreshToken } }`
+- `400` — missing, empty, or unexpected fields
+- `401` — invalid, expired, revoked, or already-rotated refresh token
+
+> Authentication failures use a single generic `REFRESH_TOKEN_INVALID` code so
+> the response never reveals whether a specific refresh-token record exists.
+> Reusing a rotated/revoked token is rejected; sessions are rotated atomically.
+
+### POST /api/v1/auth/logout
+
+Revokes the session identified by the presented refresh token. Idempotent:
+calling logout with an unknown, expired, or already-revoked token still returns
+success and changes nothing.
+
+Request body:
+
+```json
+{
+  "refreshToken": "<opaque-refresh-token>"
+}
+```
+
+- `200` — success; returns `{ success, data: { message } }`
+- `400` — missing, empty, or unexpected fields
+
+> Logout revokes only the session whose refresh token is presented. It never
+> accepts a user id, so one user's session cannot be revoked without holding its
+> own refresh credential.
 
 ### GET /api/v1/auth/me
 
@@ -309,8 +355,18 @@ Authorization: Bearer <jwt>
 
 ### Authentication Internals
 
-- Tokens are **JWT** signed with the configured `JWT_SECRET` and expire after
-  `JWT_EXPIRES_IN`.
+- Access tokens are **JWT** signed with the configured `JWT_SECRET` and expire
+  after `JWT_EXPIRES_IN`.
+- Refresh tokens are **opaque, high-entropy random strings** (256 bits) returned
+  to the client only at issuance time and persisted as **SHA-256 hashes** in the
+  `RefreshToken` table (`tokenHash` is unique). Neither the raw token nor its
+  hash is ever logged or returned.
+- Refresh sessions expire after `REFRESH_TOKEN_TTL_DAYS`; a record's `revokedAt`
+  marks an invalidated or rotated session.
+- Refresh tokens are **rotated on every refresh** inside a single Prisma
+  transaction: the old session is conditionally revoked (`revokedAt: null` guard)
+  and its replacement is persisted atomically, making replay of an already-rotated
+  token fail safely even under concurrency.
 - The `authenticate` middleware (`src/middleware/authenticate.ts`) validates the
   `Authorization: Bearer` header on protected routes and attaches `req.userId`.
 - Passwords are never stored in plaintext and never returned to clients.
@@ -891,9 +947,12 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 - Centralized Prisma client module with lifecycle utilities
 - Readiness endpoint (`/health/ready`) with mocked DB check in tests
 - Database scripts (`db:generate`, `db:migrate`, `db:migrate:dev`, `db:studio`, `db:validate`)
-- **Authentication API** (`/api/v1/auth/register`, `/api/v1/auth/login`, `/api/v1/auth/me`)
+- **Authentication API** (`/api/v1/auth/register`, `/api/v1/auth/login`, `/api/v1/auth/refresh`, `/api/v1/auth/logout`, `/api/v1/auth/me`)
 - JWT token signing/verification with configurable secret and lifetime
 - bcrypt password hashing (never stored or returned in plaintext)
+- Opaque refresh tokens with SHA-256 hashing at rest (`RefreshToken.tokenHash`)
+- Atomic refresh-token rotation (conditional revoke + replacement in one transaction)
+- Revocation-based session logout (idempotent) and `REFRESH_TOKEN_INVALID` safe errors
 - `authenticate` middleware for protecting routes
 - Module-based architecture (`src/modules/auth/`): routes → controller → service → repository → Prisma
 - **Groups & membership API** (`/api/v1/groups` CRUD + add/remove members)
@@ -912,6 +971,7 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 - Group membership authorization for settlements (requester, sender, and receiver)
 - Positive-amount and sender-receiver validation for settlements
 - Cross-group access protection for settlement detail (IDOR guard)
+- Test suite (Vitest + Supertest, 219 tests, all passing without a live DB)
 - **Activity API** (`/api/v1/groups/:groupId/activity`)
 - Group membership authorization for activity reads (IDOR guard)
 - Deterministic, database-level ordering and pagination for the activity feed
@@ -925,7 +985,6 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 
 The following features are **NOT implemented** in this chunk:
 
-- Refresh-token rotation & token revocation (RefreshToken model is reserved for a future chunk)
 - Email verification / password reset
 - User management / profile update endpoints
 - Expense delete endpoint (creation, list, and detail are implemented)

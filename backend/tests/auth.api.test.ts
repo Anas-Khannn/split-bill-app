@@ -11,18 +11,29 @@ vi.mock("../src/db/prisma.js", async () => {
 
   return {
     prisma: {
+      $transaction: vi.fn(),
       user: {
         findUnique,
         create,
+      },
+      refreshToken: {
+        findUnique: vi.fn(),
+        create: vi.fn(),
+        updateMany: vi.fn(),
       },
     },
   };
 });
 
 import { prisma } from "../src/db/prisma.js";
+import { hashRefreshToken } from "../src/modules/auth/refresh-token.util.js";
 
 const mockFindUnique = vi.mocked(prisma.user.findUnique);
 const mockCreate = vi.mocked(prisma.user.create);
+const mockRefreshFindUnique = vi.mocked(prisma.refreshToken.findUnique);
+const mockRefreshCreate = vi.mocked(prisma.refreshToken.create);
+const mockRefreshUpdateMany = vi.mocked(prisma.refreshToken.updateMany);
+const mockTransaction = vi.mocked(prisma.$transaction);
 
 const existingUser = {
   id: "user-1",
@@ -58,8 +69,12 @@ describe("Authentication API", () => {
       expect(res.body.data.user.id).toBe("user-1");
       expect(res.body.data.user.email).toBe("ahmed@example.com");
       expect(res.body.data.token).toBeTruthy();
+      expect(res.body.data.refreshToken).toBeTruthy();
       expect(res.body.data.user.passwordHash).toBeUndefined();
       expect(res.body.data.user.password).toBeUndefined();
+      expect(res.body.data.refreshToken).not.toBe(
+        mockRefreshCreate.mock.calls[0]?.[0].data.tokenHash,
+      );
     });
 
     it("should return 409 when the email is already registered", async () => {
@@ -108,6 +123,7 @@ describe("Authentication API", () => {
       expect(res.body.success).toBe(true);
       expect(res.body.data.user.id).toBe("user-1");
       expect(res.body.data.token).toBeTruthy();
+      expect(res.body.data.refreshToken).toBeTruthy();
     });
 
     it("should return 401 for invalid credentials", async () => {
@@ -126,6 +142,169 @@ describe("Authentication API", () => {
 
       expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
       expect(res.body.errors).toBeDefined();
+    });
+  });
+
+  describe("POST /api/v1/auth/refresh", () => {
+    const validRecord = {
+      id: "rt-1",
+      userId: "user-1",
+      tokenHash: "a".repeat(64),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      revokedAt: null,
+      createdAt: new Date(),
+      user: { id: "user-1", name: "Ahmed Raza", email: "ahmed@example.com" },
+    };
+
+    function mockRotation() {
+      mockTransaction.mockImplementation(async (fn) => {
+        const tx = {
+          refreshToken: {
+            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+            create: vi.fn().mockResolvedValue({ id: "rt-2" }),
+          },
+        };
+        return fn(tx);
+      });
+    }
+
+    it("should issue a new access token and rotate the refresh token", async () => {
+      mockRefreshFindUnique.mockResolvedValue(validRecord);
+      mockRotation();
+
+      const res = await request(app)
+        .post("/api/v1/auth/refresh")
+        .send({ refreshToken: "some-valid-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.user.id).toBe("user-1");
+      expect(res.body.data.token).toBeTruthy();
+      expect(res.body.data.refreshToken).toBeTruthy();
+      expect(mockRefreshFindUnique).toHaveBeenCalledWith({
+        where: { tokenHash: hashRefreshToken("some-valid-token") },
+        include: expect.any(Object),
+      });
+      expect(res.body.data.user.passwordHash).toBeUndefined();
+      expect(res.body.data.refreshToken).not.toEqual("some-valid-token");
+    });
+
+    it("should return 401 for a nonexistent or malformed token", async () => {
+      mockRefreshFindUnique.mockResolvedValue(null);
+
+      const res = await request(app)
+        .post("/api/v1/auth/refresh")
+        .send({ refreshToken: "not-a-real-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("should return 401 for a revoked token", async () => {
+      mockRefreshFindUnique.mockResolvedValue({ ...validRecord, revokedAt: new Date() });
+
+      const res = await request(app)
+        .post("/api/v1/auth/refresh")
+        .send({ refreshToken: "revoked-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("should return 401 for an expired token", async () => {
+      mockRefreshFindUnique.mockResolvedValue({
+        ...validRecord,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+
+      const res = await request(app)
+        .post("/api/v1/auth/refresh")
+        .send({ refreshToken: "expired-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("should return 401 when the session was already rotated (replay)", async () => {
+      mockRefreshFindUnique.mockResolvedValue(validRecord);
+      mockTransaction.mockImplementation(async (fn) => {
+        const tx = {
+          refreshToken: {
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            create: vi.fn(),
+          },
+        };
+        return fn(tx);
+      });
+
+      const res = await request(app)
+        .post("/api/v1/auth/refresh")
+        .send({ refreshToken: "replayed-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("should return 400 for a missing, empty, or unexpected refresh token", async () => {
+      const missing = await request(app).post("/api/v1/auth/refresh").send({});
+      const empty = await request(app)
+        .post("/api/v1/auth/refresh")
+        .send({ refreshToken: "" });
+      const extra = await request(app)
+        .post("/api/v1/auth/refresh")
+        .send({ refreshToken: "x", userId: "user-1" });
+
+      expect(missing.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(empty.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(extra.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(mockRefreshFindUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("POST /api/v1/auth/logout", () => {
+    it("should revoke the session and return 200", async () => {
+      mockRefreshFindUnique.mockResolvedValue({
+        id: "rt-1",
+        userId: "user-1",
+        tokenHash: "a".repeat(64),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        revokedAt: null,
+        createdAt: new Date(),
+        user: { id: "user-1", name: "Ahmed Raza", email: "ahmed@example.com" },
+      });
+      mockRefreshUpdateMany.mockResolvedValue({ count: 1 });
+
+      const res = await request(app)
+        .post("/api/v1/auth/logout")
+        .send({ refreshToken: "session-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.success).toBe(true);
+      expect(mockRefreshUpdateMany).toHaveBeenCalledWith({
+        where: { id: "rt-1", revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(res.body.data.refreshToken).toBeUndefined();
+      expect(res.body.data.token).toBeUndefined();
+    });
+
+    it("should be idempotent for an unknown token", async () => {
+      mockRefreshFindUnique.mockResolvedValue(null);
+
+      const res = await request(app)
+        .post("/api/v1/auth/logout")
+        .send({ refreshToken: "unknown-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.success).toBe(true);
+      expect(mockRefreshUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("should return 400 for an invalid request body", async () => {
+      const res = await request(app).post("/api/v1/auth/logout").send({});
+
+      expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(res.body.success).toBe(false);
     });
   });
 

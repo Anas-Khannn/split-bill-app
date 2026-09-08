@@ -22,5 +22,12 @@ export const loginBodySchema = z
   })
   .strict();
 
+export const refreshTokenBodySchema = z
+  .object({
+    refreshToken: z.string().min(1, "Refresh token is required"),
+  })
+  .strict();
+
 export type RegisterBody = z.infer<typeof registerBodySchema>;
 export type LoginBody = z.infer<typeof loginBodySchema>;
+export type RefreshTokenBody = z.infer<typeof refreshTokenBodySchema>;
