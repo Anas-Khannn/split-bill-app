@@ -1,6 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import type { ExpenseForBalance, SettlementForBalance } from "./balance.util.js";
+import {
+  createActivityEvent,
+  type ActivityEventInput,
+} from "../activity/activity.repository.js";
 
 export interface SafeUser {
   id: string;
@@ -121,20 +125,39 @@ export class SettlementRepository {
     return settlements;
   }
 
-  async createSettlement(data: SettlementCreateData): Promise<SettlementRecord> {
-    const settlement = await prisma.settlement.create({
-      data: {
-        groupId: data.groupId,
-        payerId: data.payerId,
-        payeeId: data.payeeId,
-        amountMinorUnits: data.amountMinorUnits,
-        currencyCode: data.currencyCode,
-        settledAt: data.settledAt,
-      },
-      include: settlementInclude,
-    });
+  /**
+   * Creates a settlement and its settlement-added activity event atomically in
+   * a single transaction.
+   */
+  async createSettlement(
+    data: SettlementCreateData,
+    activity: ActivityEventInput,
+  ): Promise<SettlementRecord> {
+    return prisma.$transaction(async (tx) => {
+      const settlement = await tx.settlement.create({
+        data: {
+          groupId: data.groupId,
+          payerId: data.payerId,
+          payeeId: data.payeeId,
+          amountMinorUnits: data.amountMinorUnits,
+          currencyCode: data.currencyCode,
+          settledAt: data.settledAt,
+        },
+        include: settlementInclude,
+      });
 
-    return settlement;
+      await createActivityEvent(tx, {
+        groupId: settlement.groupId,
+        userId: activity.userId,
+        type: activity.type,
+        message: activity.message,
+        amountMinorUnits: settlement.amountMinorUnits,
+        currencyCode: settlement.currencyCode,
+        occurredAt: settlement.createdAt,
+      });
+
+      return settlement;
+    });
   }
 
   findSettlementById(id: string): Promise<SettlementRecord | null> {

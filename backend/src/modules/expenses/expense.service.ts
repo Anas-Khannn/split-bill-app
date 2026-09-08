@@ -122,16 +122,23 @@ export class ExpenseService {
       }
     }
 
-    const expense = await this.repository.createExpenseWithSplits({
-      groupId,
-      paidById: input.payerId,
-      description: input.description,
-      amountMinorUnits: totalMinorUnits,
-      currencyCode: "PKR",
-      splitType: input.splitType,
-      expenseDate: input.expenseDate ? new Date(input.expenseDate) : new Date(),
-      splits,
-    });
+    const expense = await this.repository.createExpenseWithSplits(
+      {
+        groupId,
+        paidById: input.payerId,
+        description: input.description,
+        amountMinorUnits: totalMinorUnits,
+        currencyCode: "PKR",
+        splitType: input.splitType,
+        expenseDate: input.expenseDate ? new Date(input.expenseDate) : new Date(),
+        splits,
+      },
+      {
+        userId: requesterId,
+        type: "EXPENSE_ADDED",
+        message: `added the expense "${input.description}"`,
+      },
+    );
 
     return this.toDetailDto(expense);
   }

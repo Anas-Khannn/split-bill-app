@@ -82,6 +82,7 @@ describe("Groups API", () => {
         const tx = {
           group: { create: vi.fn().mockResolvedValue(group) },
           groupMember: { create: vi.fn().mockResolvedValue(groupMember) },
+          activityEvent: { create: vi.fn().mockResolvedValue({ id: "event-1" }) },
         };
         return fn(tx);
       });
@@ -320,7 +321,13 @@ describe("Groups API", () => {
         email: "sana@example.com",
       });
       mockPrisma.groupMember.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
-      mockPrisma.groupMember.create.mockResolvedValue(groupMember);
+      mockPrisma.$transaction.mockImplementation(async (fn) => {
+        const tx = {
+          groupMember: { create: vi.fn().mockResolvedValue(groupMember) },
+          activityEvent: { create: vi.fn().mockResolvedValue({ id: "event-1" }) },
+        };
+        return fn(tx);
+      });
 
       const res = await request(app)
         .post("/api/v1/groups/group-1/members")

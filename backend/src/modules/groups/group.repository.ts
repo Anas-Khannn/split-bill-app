@@ -1,5 +1,9 @@
 import type { Group, GroupMember } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import {
+  createActivityEvent,
+  type ActivityEventInput,
+} from "../activity/activity.repository.js";
 
 export interface GroupMemberUser {
   id: string;
@@ -27,10 +31,15 @@ export interface GroupWithMembers {
 
 export class GroupRepository {
   /**
-   * Creates a group and its owner's membership inside a single transaction so
-   * that either both records persist or neither does.
+   * Creates a group, its owner's membership, and the group-created activity
+   * event inside a single transaction so that either all three records persist
+   * or none do.
    */
-  async createGroupWithOwner(ownerId: string, data: { name: string }): Promise<Group> {
+  async createGroupWithOwner(
+    ownerId: string,
+    data: { name: string },
+    activity: ActivityEventInput,
+  ): Promise<Group> {
     return prisma.$transaction(async (tx) => {
       const group = await tx.group.create({
         data: {
@@ -44,6 +53,16 @@ export class GroupRepository {
           groupId: group.id,
           userId: ownerId,
         },
+      });
+
+      await createActivityEvent(tx, {
+        groupId: group.id,
+        userId: activity.userId,
+        type: activity.type,
+        message: activity.message,
+        amountMinorUnits: null,
+        currencyCode: null,
+        occurredAt: group.createdAt,
       });
 
       return group;
@@ -175,12 +194,33 @@ export class GroupRepository {
     await prisma.group.delete({ where: { id } });
   }
 
-  async addGroupMember(groupId: string, memberId: string): Promise<GroupMember> {
-    return prisma.groupMember.create({
-      data: {
+  /**
+   * Adds a group member and records the member-added activity event atomically.
+   */
+  async addGroupMember(
+    groupId: string,
+    memberId: string,
+    activity: ActivityEventInput,
+  ): Promise<GroupMember> {
+    return prisma.$transaction(async (tx) => {
+      const member = await tx.groupMember.create({
+        data: {
+          groupId,
+          userId: memberId,
+        },
+      });
+
+      await createActivityEvent(tx, {
         groupId,
-        userId: memberId,
-      },
+        userId: activity.userId,
+        type: activity.type,
+        message: activity.message,
+        amountMinorUnits: null,
+        currencyCode: null,
+        occurredAt: member.createdAt,
+      });
+
+      return member;
     });
   }
 
