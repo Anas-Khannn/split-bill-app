@@ -42,7 +42,8 @@ backend/
 │   ├── redis/                    # Redis infrastructure (infra, no domain logic)
 │   │   ├── redisClient.ts        # Lazy ioredis client, connect/disconnect, RedisLike contract
 │   │   ├── rateLimitStore.ts     # Redis-backed express-rate-limit store (Lua fixed window)
-│   │   └── distributedLock.ts    # TTL-bounded distributed lock (SET NX PX + Lua release)
+│   │   ├── distributedLock.ts    # TTL-bounded distributed lock (SET NX PX + Lua release)
+│   │   └── cacheStore.ts         # Generic string cache primitive (get/set+TTL/delete, no policy)
 │   ├── queues/                   # Background job queue infrastructure (infra, no domain logic)
 │   │   ├── job.types.ts          # JOB_TYPES allowlist + JobEnvelope shape
 │   │   ├── jobQueue.ts           # Step-by-step Redis queue: enqueue/claim/complete/retry/discard
@@ -63,6 +64,7 @@ backend/
 │   │   │   ├── summary.service.ts
 │   │   │   └── summary.validators.ts
 │   │   └── groups/               # Groups & membership feature module
+│   │       ├── group.cache.ts    # Cache-aside adapter (key, TTL, serialize, safe degrade)
 │   │       ├── group.controller.ts
 │   │       ├── group.repository.ts
 │   │       ├── group.routes.ts
@@ -112,6 +114,9 @@ backend/
 │   ├── auth.service.test.ts      # Auth service unit tests (mocked repository)
 │   ├── groups.api.test.ts        # Group endpoint integration tests (mocked DB)
 │   ├── groups.service.test.ts    # Group service unit tests (mocked repository)
+│   ├── group.cache.test.ts       # Group cache adapter tests (round-trip, TTL, validation, degrade)
+│   ├── groups.cache.service.test.ts # Group service cache-aside behavior (hit/miss/authz/invalidation)
+│   ├── groups.cache.api.test.ts  # Group caching endpoint tests (hit/miss, 403-on-hit, invalidation)
 │   ├── expenses.api.test.ts      # Expense endpoint integration tests (mocked DB)
 │   ├── expenses.service.test.ts  # Expense service unit tests (mocked repository)
 │   ├── split.util.test.ts        # Split calculation unit tests
@@ -131,6 +136,7 @@ backend/
 │   └── middleware.test.ts        # Validation middleware tests
 │   └── rate-limit.test.ts        # Rate limiting tests (envelope, headers, window reset, per-IP isolation)
 │   └── rate-limit.redis.test.ts  # Redis-backed rate limiting tests (shared state, fail-open, prefixes)
+│   └── cache-store.test.ts       # Generic cache store tests (round-trip, TTL conversion, propagation)
 │   └── distributed-lock.test.ts  # Distributed lock unit tests (token, TTL, release, degraded paths)
 │   └── queue.test.ts             # Job queue unit tests (enqueue, claim/lease, retry/backoff, discard)
 │   └── workerRunner.test.ts      # Worker poll-loop tests (dispatch, validation, retries, graceful stop)
@@ -192,6 +198,7 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 | `JOB_QUEUE_LEASE_MS` | No | `30000` | In-flight lease length for a claimed job; must exceed the longest job. |
 | `JOB_QUEUE_PAYLOAD_TTL_MS` | No | `86400000` | TTL of a queued job payload; must exceed the full retry horizon. |
 | `JOB_QUEUE_POLL_INTERVAL_MS` | No | `100` | Idle poll interval of the worker process. |
+| `CACHE_GROUP_TTL_SECONDS` | No | `300` | TTL of cached group details. Group data is relatively stable and every mutating group operation invalidates the entry, so this is the *safety-net cap* for missed invalidations, not the freshness guarantee. |
 
 ### Setting Up Your Local Database
 
@@ -355,14 +362,16 @@ limiter, so they are subject to both counters.
 
 ## Redis Infrastructure
 
-Redis supports three cross-instance concerns. It is optional at runtime for the
-**API server** — if Redis is unreachable the server degrades (in-memory rate
-limiting, uncoordinated locks) and stays up — but it is **required** by the
-**worker process**, which cannot move jobs without a queue transport. Redis is
-accessed only through the narrow `RedisLike` contract in
-`src/redis/redisClient.ts` (a single lazy ioredis client, created with
-`enableOfflineQueue: false` so commands fail fast instead of queueing), so tests
-can inject an in-memory fake — the test suite runs without a live Redis server.
+Redis supports four cross-instance concerns: distributed rate limiting,
+distributed locking, the background job queue, and cache-aside caching. It is
+optional at runtime for the **API server** — if Redis is unreachable the server
+degrades (in-memory rate limiting, uncoordinated locks, cache reads fall back to
+the database) and stays up — but it is **required** by the **worker process**,
+which cannot move jobs without a queue transport. Redis is accessed only through
+the narrow `RedisLike` contract in `src/redis/redisClient.ts` (a single lazy
+ioredis client, created with `enableOfflineQueue: false` so commands fail fast
+instead of queueing), so tests can inject an in-memory fake — the test suite
+runs without a live Redis server.
 
 - `connectRedis()` runs at startup and is **non-fatal for the API server**: if
   Redis is unreachable the server keeps serving with degraded behavior
@@ -452,6 +461,115 @@ finish, then disconnects cleanly. Jobs carry the enqueuing request's
 `requestId` in their envelope so worker logs correlate back to the HTTP request
 that queued them. Only allowed job payloads, which carry no secrets or tokens,
 are ever stored in Redis.
+
+## Redis Caching
+
+Frequently-read, relatively stable reads are cached in Redis with the
+**cache-aside** pattern. PostgreSQL remains the authoritative source of truth;
+Redis is purely a performance layer. Every cache entry has a TTL, every affected
+write invalidates its entries, and a Redis outage only costs performance, never
+correctness.
+
+### Selected cached resource
+
+`GET /api/v1/groups/:id` (**group details with members**). It is the best fit
+among the current reads: it is hit frequently (group detail views), returns a
+relatively stable payload (name, owner, membership list — membership only
+changes through owner-only operations), and is not user-scoped, so one
+group-keyed entry serves every authenticated member.
+
+### Cache-aside flow
+
+```
+Request → authenticate → membership/ownership authorize
+  → service cache lookup
+      ├─ HIT → membership check → response (no PostgreSQL group query)
+      └─ MISS → repository (PostgreSQL) → membership check
+            → store result in Redis (with TTL) → response
+```
+
+The **first authorized read populates the cache**; subsequent reads are served
+from Redis until the entry is invalidated or its TTL expires. The response
+envelope is identical on hit and miss — caching is an internal implementation
+detail and never exposed to clients.
+
+### Cache key strategy
+
+Keys follow the existing namespaced convention `concern:resource:{id}` (compare
+`lock:settlement:group:{groupId}`):
+
+```
+cache:group:{groupId}
+```
+
+- `cache:` keeps cache entries isolated from the `rl:`/`lock:`/`job:` keyspaces.
+- `group:` names the resource type so different cached resources can never
+  collide under the same id.
+- The id is the validated non-empty path parameter; keys are only ever built
+  from the fixed `groupCacheKey()` template, never from arbitrary user input.
+
+### TTL strategy
+
+Every entry expires via `CACHE_GROUP_TTL_SECONDS` (default **300 s / 5 min**),
+configured centrally in the environment schema and `GroupCache`. The TTL is a
+**safety net, not the freshness mechanism**: because every mutating group
+operation invalidates the entry, the normal staleness window is ~zero. The TTL
+guards against missed invalidations (e.g. a process that crashed between the
+DB write and the cache delete) and bounds memory. No permanent cache entries
+exist anywhere.
+
+### Cache invalidation
+
+Invalidation runs **after the successful database write** that changes the
+group detail, close to the domain operation that owns the change:
+
+- `PUT /groups/:id` (rename) → invalidate `cache:group:{id}`
+- `DELETE /groups/:id` → invalidate `cache:group:{id}`
+- `POST /groups/:id/members` (add) → invalidate `cache:group:{id}`
+- `DELETE /groups/:id/members/:memberId` (remove) → invalidate `cache:group:{id}`
+
+Only the affected group's key is ever deleted; unrelated entries are untouched.
+Writes never depend on caching succeeding: the database transaction commits
+first and then invalidation runs best-effort.
+
+### Redis failure behavior
+
+Caching is an optimization, never a dependency:
+
+- **Read failure** → logged (`cache operation`, resource type/id; never payloads)
+  and treated as a cache miss — the request is served from PostgreSQL.
+- **Write (populate) failure** → logged; the authoritative database result is
+  returned normally.
+- **Invalidation failure** → logged with a warning that stale data may be served
+  until the TTL expires.
+- Raw Redis errors are never exposed to clients, and no cached payload (group
+  names or member names/emails) is ever written to logs.
+
+### Authorization and security
+
+A cache hit can **never bypass authorization**:
+
+```
+authenticate → cache lookup → membership check → response
+```
+
+The group detail is only returned to members; the membership check
+(`isGroupMember`) always runs against PostgreSQL, on hit and miss alike. Cache
+entries are **group-scoped, not user-scoped**, so one entry cannot leak data
+across authorization boundaries — a non-member's request still ends in HTTP 403
+even when a warm cache entry exists, and non-member misses never populate the
+cache. Only the same fields the endpoint already returns to members
+(name, owner, members' names/emails) are stored: never passwords, tokens,
+refresh tokens, Authorization headers, database credentials, or request bodies.
+
+### Cache stampede strategy
+
+A stampede (N concurrent misses after expiry all hitting PostgreSQL at once) is
+**deliberately not lock-guarded**. The existing distributed lock is for write
+serialization, and lock-based read population is not justified here: the cached
+query is a single indexed lookup with a short TTL, and a burst of coincident
+misses resolves itself within one TTL epoch. The small, self-bounding window is
+accepted and documented rather than adding lock round-trips to every miss.
 
 ## Edge Layer / Gateway
 
@@ -805,6 +923,14 @@ architecture as `auth`: routes → controller → service → repository → Pri
 service owns authorization (ownership and membership checks) and throws grouped
 `AppError` subclasses (`ForbiddenError`, `NotFoundError`, `ConflictError`) that
 the centralized error handler serializes.
+
+`GET /groups/:id` reads through a **cache-aside** path (`group.cache.ts`): the
+service checks the group-scoped Redis entry first, authorizes membership (always
+against PostgreSQL, hit or miss), serves a hit without the group query, and
+re-populates the cache on a miss. Every mutating group operation (rename,
+delete, member add/remove) invalidates the group's cache entry after the
+database write commits. See [Redis Caching](#redis-caching) for the full
+rationale, key layout, TTL, and failure behavior.
 
 ## Expenses API
 
@@ -1314,6 +1440,12 @@ Routes
   → Prisma       (database)
 ```
 
+Between the service and the repository, the **group detail** read path sits a
+cache-aside Redis layer (`service → Redis cache → repository → PostgreSQL`): a
+hit skips the repository query, a miss reads PostgreSQL and repopulates Redis.
+Caching is applied per-operation — see [Redis Caching](#redis-caching) — and
+never changes the response contract.
+
 Each feature lives under `src/modules/<feature>/`. The `auth`, `groups`,
 `expenses`, `settlements`, and `activity` modules are the reference examples.
 Controllers parse the validated request and delegate to the service; the service
@@ -1406,6 +1538,13 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 - **GroupSummary model** — derived, non-authoritative snapshot upserted by the
   worker (idempotent by unique `groupId`); authoritative data stays in
   expenses/settlements/memberships
+- **Redis caching (cache-aside)** (`src/redis/cacheStore.ts` +
+  `src/modules/groups/group.cache.ts`) — group details (`GET /groups/:id`) served
+  from Redis under `cache:group:{groupId}` with a `CACHE_GROUP_TTL_SECONDS`
+  safety net; membership authorization always enforced (never bypassed by a hit);
+  invalidation on rename/delete/member add/member remove; Redis outages degrade
+  to PostgreSQL with logging (read=miss, write=log, invalidation=log), never raw
+  Redis errors
 - Test suite (Vitest + Supertest, all passing without a live DB)
 
 ## Not Yet Implemented
@@ -1430,6 +1569,14 @@ The following features are **NOT implemented** in this chunk:
   expense/settlement writes).
 - Queue observability tooling (dead-letter inspection, per-type backlog metrics,
   and job-timing dashboards are not yet built; retries and discards are logged).
+- Caching is limited to group details: the user's group list, balances, and the
+  activity feed are intentionally **not** cached yet (user-scoped and/or write-hot
+  data with more complex invalidation), and cache population is not
+  lock-protected against stampedes (the current single-lookup workload does not
+  justify it — re-evaluate if a cached query grows expensive).
+- Cache/backing-store consistency: because invalidation runs *after* the
+  database commit, a process that crashes between the two leaves a stale entry
+  that lives until the TTL expires. Tune `CACHE_GROUP_TTL_SECONDS` accordingly.
 
 These will be built on top of this foundation in subsequent chunks.
 
