@@ -1,5 +1,6 @@
 import { APP_ERRORS } from "../../constants/app-errors.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors/app.error.js";
+import { METRIC, metrics } from "../../metrics/registry.js";
 import {
   ExpenseRepository,
   type ExpenseWithDetails,
@@ -139,6 +140,8 @@ export class ExpenseService {
         message: `added the expense "${input.description}"`,
       },
     );
+
+    metrics.increment(METRIC.expensesCreatedTotal);
 
     return this.toDetailDto(expense);
   }

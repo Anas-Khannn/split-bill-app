@@ -11,6 +11,7 @@ import {
   DistributedLockConflictError,
 } from "../../redis/distributedLock.js";
 import { getRedis } from "../../redis/redisClient.js";
+import { METRIC, metrics } from "../../metrics/registry.js";
 import type { IdempotencyContext } from "../idempotency/reconcile.js";
 import { SettlementRepository, type SettlementRecord } from "./settlement.repository.js";
 import { calculateBalances } from "./balance.util.js";
@@ -146,6 +147,8 @@ export class SettlementService {
           },
         ),
       );
+
+      metrics.increment(METRIC.settlementsCreatedTotal);
 
       return this.toDto(settlement);
     } catch (error) {

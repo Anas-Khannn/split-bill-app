@@ -1,6 +1,7 @@
 import { loadEnv } from "../../config/env.js";
 import { getRedis } from "../../redis/redisClient.js";
 import { RedisCacheStore, type CacheStore } from "../../redis/cacheStore.js";
+import { METRIC, METRIC_LABEL, metrics } from "../../metrics/registry.js";
 import { logger } from "../../utils/logger.js";
 import type { GroupWithMembers, GroupMemberUser } from "./group.repository.js";
 
@@ -74,6 +75,9 @@ export class GroupCache {
     try {
       raw = await this.store.get(groupCacheKey(groupId));
     } catch (error) {
+      metrics.increment(METRIC.cacheFailuresTotal, {
+        [METRIC_LABEL.operation]: "get",
+      });
       logger.warn("Group cache read failed; falling back to the database", {
         resourceType: "group",
         resourceId: groupId,
@@ -102,6 +106,9 @@ export class GroupCache {
     try {
       await this.store.set(groupCacheKey(groupId), this.serialize(group), this.ttlSeconds);
     } catch (error) {
+      metrics.increment(METRIC.cacheFailuresTotal, {
+        [METRIC_LABEL.operation]: "set",
+      });
       logger.warn("Group cache write failed; the database result is still authoritative", {
         resourceType: "group",
         resourceId: groupId,
@@ -119,6 +126,9 @@ export class GroupCache {
     try {
       await this.store.delete(groupCacheKey(groupId));
     } catch (error) {
+      metrics.increment(METRIC.cacheFailuresTotal, {
+        [METRIC_LABEL.operation]: "delete",
+      });
       logger.warn(
         "Group cache invalidation failed; stale data may be served until the TTL expires",
         {

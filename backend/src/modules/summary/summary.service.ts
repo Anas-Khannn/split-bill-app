@@ -7,6 +7,7 @@ import {
 } from "../../errors/app.error.js";
 import { JOB_TYPES } from "../../queues/job.types.js";
 import { getJobQueue, type JobQueue } from "../../queues/jobQueue.js";
+import { METRIC, metrics } from "../../metrics/registry.js";
 import { logger } from "../../utils/logger.js";
 import {
   SummaryRepository,
@@ -123,6 +124,7 @@ export class SummaryService {
       return await enqueueGroupSummaryRecomputeJob(groupId, { requestId });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      metrics.increment(METRIC.queueFailuresTotal);
       logger.error("Failed to enqueue a group summary recompute job", {
         jobType: JOB_TYPES.GROUP_SUMMARY_RECOMPUTE,
         error: message,

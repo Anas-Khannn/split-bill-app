@@ -24,6 +24,8 @@ const envSchema = z.object({
   JOB_QUEUE_PAYLOAD_TTL_MS: z.coerce.number().int().positive().default(86400000),
   JOB_QUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(100),
   CACHE_GROUP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  METRICS_ENABLED: z.enum(["true", "false"]).default("true"),
+  METRICS_PORT: z.coerce.number().int().positive().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

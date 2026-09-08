@@ -1,4 +1,5 @@
 import { logger } from "../utils/logger.js";
+import { METRIC, METRIC_LABEL, metrics } from "../metrics/registry.js";
 import { jobRegistry, type JobRegistry } from "./jobRegistry.js";
 import { PermanentJobFailureError, type JobQueue } from "./jobQueue.js";
 import type { JobEnvelope, JobType } from "./job.types.js";
@@ -96,11 +97,16 @@ export class WorkerRunner {
     const requestId = envelope.requestId ?? null;
     const startedAt = Date.now();
 
+    // Job type labels are always drawn from the controlled JobType allowlist
+    // (never from a payload field), so this label dimension is bounded.
+    const jobLabels = { [METRIC_LABEL.jobType]: type };
+
     this.inFlight += 1;
     try {
       const parsed = registration.schema.safeParse(envelope.payload);
       if (!parsed.success) {
         await this.queue.discard(type, jobId);
+        metrics.increment(METRIC.backgroundJobsDiscardedTotal, jobLabels);
         logger.warn("Discarded a job with an invalid payload", {
           jobType: type,
           jobId,
@@ -115,6 +121,8 @@ export class WorkerRunner {
       await registration.process(job);
       await this.queue.complete(type, jobId);
 
+      metrics.increment(METRIC.backgroundJobsSucceededTotal, jobLabels);
+
       logger.info("Background job processed", {
         jobType: type,
         jobId,
@@ -125,6 +133,8 @@ export class WorkerRunner {
     } catch (error) {
       if (error instanceof PermanentJobFailureError) {
         await this.queue.discard(type, jobId);
+        metrics.increment(METRIC.backgroundJobsFailedTotal, jobLabels);
+        metrics.increment(METRIC.backgroundJobsDiscardedTotal, jobLabels);
         logger.error("Background job permanently failed", {
           jobType: type,
           jobId,
@@ -138,6 +148,8 @@ export class WorkerRunner {
       const attemptsAfterThisFailure = envelope.attempts + 1;
       if (attemptsAfterThisFailure >= this.queue.config.maxAttempts) {
         await this.queue.discard(type, jobId);
+        metrics.increment(METRIC.backgroundJobsFailedTotal, jobLabels);
+        metrics.increment(METRIC.backgroundJobsDiscardedTotal, jobLabels);
         logger.error("Background job failed after exhausting all attempts", {
           jobType: type,
           jobId,
@@ -150,6 +162,8 @@ export class WorkerRunner {
 
       const delayMs = this.queue.backoffFor(attemptsAfterThisFailure);
       await this.queue.retryAfterFailure(type, jobId, attemptsAfterThisFailure, delayMs);
+      metrics.increment(METRIC.backgroundJobsFailedTotal, jobLabels);
+      metrics.increment(METRIC.backgroundJobsRetriedTotal, jobLabels);
       logger.warn("Background job failed; scheduling a retry", {
         jobType: type,
         jobId,

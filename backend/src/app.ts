@@ -7,6 +7,8 @@ import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { apiLimiter, authLimiter } from "./middleware/rateLimiter.js";
 import { requestId } from "./middleware/requestId.js";
 import { requestCompletionLogger } from "./middleware/requestCompletionLogger.js";
+import { requestHttpMetrics } from "./metrics/httpMetrics.js";
+import metricsRoutes from "./metrics/metrics.routes.js";
 import { configureEdge } from "./edge/index.js";
 import { EDGE_MAX_BODY_BYTES } from "./edge/requestGuard.js";
 import { getRedis, isRedisAvailable } from "./redis/redisClient.js";
@@ -50,12 +52,17 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   app.use(apiLimiter(redis));
 
   app.use(requestId);
+  app.use(requestHttpMetrics);
   app.use(requestCompletionLogger);
 
   app.use(express.json({ limit: EDGE_MAX_BODY_BYTES }));
   app.use(express.urlencoded({ extended: true, limit: EDGE_MAX_BODY_BYTES }));
 
   app.use("/health", healthRoutes);
+
+  if (env.METRICS_ENABLED === "true") {
+    app.use("/metrics", metricsRoutes);
+  }
 
   app.use("/api/v1/auth", authLimiter(redis));
   app.use("/api/v1", apiV1Routes);

@@ -199,6 +199,8 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 | `JOB_QUEUE_PAYLOAD_TTL_MS` | No | `86400000` | TTL of a queued job payload; must exceed the full retry horizon. |
 | `JOB_QUEUE_POLL_INTERVAL_MS` | No | `100` | Idle poll interval of the worker process. |
 | `CACHE_GROUP_TTL_SECONDS` | No | `300` | TTL of cached group details. Group data is relatively stable and every mutating group operation invalidates the entry, so this is the *safety-net cap* for missed invalidations, not the freshness guarantee. |
+| `METRICS_ENABLED` | No | `true` | When `true`, the API exposes aggregate metrics at `GET /metrics` in Prometheus text format. Set `false` to disable (e.g. behind a shared edge). |
+| `METRICS_PORT` | No | — | Optional port number for the background worker's metrics scrape listener. The worker has no HTTP server of its own; leave unset to disable. |
 
 ### Setting Up Your Local Database
 
@@ -282,8 +284,9 @@ through logs and matched to responses.
   back when valid. Oversized, malformed, or control-character values are rejected
   and replaced with a newly generated UUID.
 - The ID is attached to every request as `req.requestId` and is included in
-  centralized request-completion logs (`requestId`, `method`, `path`,
-  `statusCode`, `durationMs`).
+  centralized request-completion logs (`requestId`, `method`, `path`, `route`,
+  `statusCode`, `durationMs`), where `route` is the normalized route template
+  (e.g. `/api/v1/groups/:id`) rather than a raw URL.
 - Request IDs are **tracing identifiers only** — they are never used for
   authentication or authorization, and they are present (via the response header)
   on success and error responses alike, including 401/403/404/500 flows.
@@ -1585,3 +1588,79 @@ These will be built on top of this foundation in subsequent chunks.
 The backend error response contract (`{ success: false, message: "..." }`) is designed to be compatible with the Flutter frontend's `api_exception_mapper.dart`, which reads `data['message']` from HTTP error responses.
 
 The API is versioned at `/api/v1` to match the frontend's `AppConstants.apiBaseUrl` pattern.
+
+## Observability & Metrics
+
+The backend exposes Prometheus-formatted metrics without any vendor dependency:
+a small in-process registry (`src/metrics/registry.ts`) records bounded counters
+and one histogram, and `src/metrics/httpMetrics.ts` attaches request metrics to
+the shared request pipeline. The API serves them at `GET /metrics`
+(`src/metrics/metrics.routes.ts`), gated by `METRICS_ENABLED`.
+
+- **Scope:** aggregates only. The payload contains counters/histograms with
+  bounded labels — no raw URLs, paths, IDs, emails, request IDs, query strings,
+  error messages, credentials, or bodies. Request-level correlation stays in
+  logs via `X-Request-Id` (see [Request Tracing](#request-tracing)); metrics are
+  deliberately free of per-request identifiers to keep cardinality low.
+- **Format:** Prometheus text exposition format 0.0.4 (`Content-Type:
+  text/plain; version=0.0.4`), rendered on demand by
+  `metrics.renderPrometheus()` with **no database or Redis access**.
+
+### Exposed metrics
+
+| Metric | Kind | Labels | Meaning |
+|---|---|---|---|
+| `http_requests_total` | counter | `method`, `route`, `status` | HTTP requests handled |
+| `http_errors_total` | counter | `method`, `route`, `status` | HTTP responses with status ≥ 400 |
+| `http_request_duration_seconds` | histogram | `method`, `route` | Request handling time (buckets 5ms … 10s) |
+| `users_registered_total` | counter | — | Successful registrations |
+| `groups_created_total` | counter | — | Successful group creations |
+| `expenses_created_total` | counter | — | Successful expense creations |
+| `settlements_created_total` | counter | — | Successful settlement creations |
+| `activity_events_created_total` | counter | `type` | Persisted activity events |
+| `background_jobs_succeeded_total` | counter | `job_type` | Jobs processed successfully |
+| `background_jobs_failed_total` | counter | `job_type` | Job processing failures |
+| `background_jobs_retried_total` | counter | `job_type` | Failed jobs scheduled for retry |
+| `background_jobs_discarded_total` | counter | `job_type` | Jobs dropped (exhausted retries / terminal) |
+| `redis_connection_errors_total` | counter | — | Redis connection errors on the shared client |
+| `cache_failures_total` | counter | `operation` (`get`/`set`/`delete`) | Cache failures absorbed by the domain cache |
+| `queue_failures_total` | counter | — | Background job enqueue failures |
+| `database_connection_errors_total` | counter | — | PostgreSQL connection failures at startup |
+
+### Label & cardinality rules
+
+- **Low cardinality by construction:** label values are drawn from small,
+  bounded sets — HTTP status classes (`2xx`/`3xx`/`4xx`/`5xx`/`other`),
+  normalized route templates from `resolveRouteTemplate()` (e.g.
+  `/api/v1/groups/:id`, never a concrete URL), the Prisma `ActivityType` enum,
+  and the `JOB_TYPES` allowlist. Raw user input never becomes a label.
+- **Strict catalog:** every metric is declared up front with its allowed label
+  keys in `DEFAULT_METRICS`; recording strips any key not declared for that
+  metric, and unknown metrics are no-ops.
+- **Escaped output:** label values are escaped for safe rendering
+  (`\`, `"`, and control characters).
+- Route templates are resolved by identity-matching the request's route against
+  the Express router stack, so nested routers report full prefixes (e.g.
+  `/api/v1/groups/:id`) instead of ambiguous innermost segments.
+
+### Worker metrics port
+
+The background worker process has no HTTP server, so its job/Redis metrics would
+otherwise be invisible. When `METRICS_PORT` is set (and `METRICS_ENABLED=true`),
+the worker starts a minimal scrape listener (`src/metrics/metricsEndpoint.ts`)
+serving the same text-format payload. It is shut down during graceful stop.
+
+### Failure behavior
+
+Observability is **never allowed to break business operations.** Recording into
+the registry cannot throw (unknown/catalog-violated inputs are safe no-ops), and
+the request-metrics middleware wraps its recording in `try/catch`, so a metrics
+bug can at worst drop a single measurement.
+
+### Production considerations
+
+`GET /metrics` is unauthenticated by design (it exposes only aggregates, no user
+data) and reads no external state, so it is safe for a well-known scrape target.
+For production behind a shared edge, either restrict the route at the
+gateway/proxy or set `METRICS_ENABLED=false`; the environment table documents
+both options.

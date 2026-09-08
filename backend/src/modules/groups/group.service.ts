@@ -1,5 +1,6 @@
 import { APP_ERRORS } from "../../constants/app-errors.js";
 import { ConflictError, ForbiddenError, NotFoundError } from "../../errors/app.error.js";
+import { METRIC, metrics } from "../../metrics/registry.js";
 import {
   GroupRepository,
   type GroupWithMemberCount,
@@ -27,6 +28,8 @@ export class GroupService {
       type: "GROUP_CREATED",
       message: "created the group",
     });
+
+    metrics.increment(METRIC.groupsCreatedTotal);
 
     return {
       id: group.id,

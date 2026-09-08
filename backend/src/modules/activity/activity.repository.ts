@@ -1,5 +1,6 @@
 import type { ActivityType, Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import { METRIC, METRIC_LABEL, metrics } from "../../metrics/registry.js";
 
 /**
  * Describes an activity event that another domain operation wants to record.
@@ -52,18 +53,27 @@ export function createActivityEvent(
   tx: Prisma.TransactionClient,
   data: CreateActivityEventData,
 ): Promise<{ id: string }> {
-  return tx.activityEvent.create({
-    data: {
-      groupId: data.groupId,
-      userId: data.userId,
-      type: data.type,
-      message: data.message,
-      amountMinorUnits: data.amountMinorUnits ?? null,
-      currencyCode: data.currencyCode ?? null,
-      occurredAt: data.occurredAt,
-    },
-    select: { id: true },
-  });
+  return tx.activityEvent
+    .create({
+      data: {
+        groupId: data.groupId,
+        userId: data.userId,
+        type: data.type,
+        message: data.message,
+        amountMinorUnits: data.amountMinorUnits ?? null,
+        currencyCode: data.currencyCode ?? null,
+        occurredAt: data.occurredAt,
+      },
+      select: { id: true },
+    })
+    .then((event) => {
+      // Only counts events that were actually persisted. `type` is the bounded
+      // Prisma ActivityType enum, so this label dimension is small and stable.
+      metrics.increment(METRIC.activityEventsCreatedTotal, {
+        [METRIC_LABEL.activityType]: data.type,
+      });
+      return event;
+    });
 }
 
 export class ActivityRepository {
