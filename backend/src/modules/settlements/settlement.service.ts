@@ -100,7 +100,7 @@ export class SettlementService {
       );
     }
 
-    const settlement = await this.repository.createSettlementWithIdempotency(
+const settlement = await this.repository.createSettlement(
       {
         groupId,
         payerId: input.payerId,
@@ -110,6 +110,11 @@ export class SettlementService {
         settledAt: new Date(),
       },
       idempotency,
+      {
+        userId: requesterId,
+        type: "SETTLEMENT_ADDED",
+        message: "recorded a settlement",
+      },
     );
 
     return this.toDto(settlement);

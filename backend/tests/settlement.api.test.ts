@@ -134,6 +134,9 @@ function makeTx() {
       create: vi.fn(),
       findUnique: vi.fn(),
     },
+    activityEvent: {
+      create: vi.fn(),
+    },
   };
 }
 
@@ -147,6 +150,7 @@ function freshCreateTx() {
   tx.idempotencyRecord.create.mockResolvedValue(idempotencyRecordRow({ status: "PENDING" }));
   tx.settlement.create.mockResolvedValue(storedSettlement());
   tx.idempotencyRecord.update.mockResolvedValue(idempotencyRecordRow());
+  tx.activityEvent.create.mockResolvedValue({ id: "event-1" });
   return tx;
 }
 
@@ -233,7 +237,7 @@ describe("Settlements API", () => {
     it("creates a settlement, claims the idempotency key, and returns 201", async () => {
       mockPrisma.group.findUnique.mockResolvedValue(group);
       mockPrisma.groupMember.findMany.mockResolvedValue(memberUsers());
-      const tx = freshCreateTx();
+const tx = freshCreateTx();
       mockPrisma.$transaction.mockImplementation(runTransaction(tx));
 
       const res = await request(app)

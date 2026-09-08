@@ -8,6 +8,10 @@ import {
 } from "../idempotency/idempotency.constants.js";
 import { reconcileIdempotencyRecord, type IdempotencyContext } from "../idempotency/reconcile.js";
 import type { ExpenseForBalance, SettlementForBalance } from "./balance.util.js";
+import {
+  createActivityEvent,
+  type ActivityEventInput,
+} from "../activity/activity.repository.js";
 
 export interface SafeUser {
   id: string;
@@ -128,9 +132,14 @@ export class SettlementRepository {
     return settlements;
   }
 
-  async createSettlementWithIdempotency(
+/**
+   * Creates a settlement and its settlement-added activity event atomically,
+   * protected against duplicates by the idempotency record.
+   */
+  async createSettlement(
     data: SettlementCreateData,
     idempotency: IdempotencyContext,
+    activity: ActivityEventInput,
   ): Promise<SettlementRecord> {
     try {
       return await prisma.$transaction(async (tx) => {
@@ -168,6 +177,16 @@ export class SettlementRepository {
             settledAt: data.settledAt,
           },
           include: settlementInclude,
+        });
+
+        await createActivityEvent(tx, {
+          groupId: settlement.groupId,
+          userId: activity.userId,
+          type: activity.type,
+          message: activity.message,
+          amountMinorUnits: settlement.amountMinorUnits,
+          currencyCode: settlement.currencyCode,
+          occurredAt: settlement.createdAt,
         });
 
         await tx.idempotencyRecord.update({

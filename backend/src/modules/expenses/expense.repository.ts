@@ -1,5 +1,9 @@
 import type { Expense, ExpenseSplit, Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import {
+  createActivityEvent,
+  type ActivityEventInput,
+} from "../activity/activity.repository.js";
 
 export interface ExpenseCreateSplit {
   userId: string;
@@ -60,11 +64,16 @@ export class ExpenseRepository {
   }
 
   /**
-   * Creates an expense and all of its splits atomically. The nested `splits`
-   * create is executed as part of the single `expense.create` write inside the
-   * transaction, so either the expense and every split persist or none do.
+   * Creates an expense, all of its splits, and the expense-added activity event
+   * atomically. The nested `splits` create is executed as part of the single
+   * `expense.create` write inside the transaction, and the activity event is
+   * written by the same transaction, so either the expense, its splits, and the
+   * event persist together or none do.
    */
-  async createExpenseWithSplits(data: CreateExpenseData): Promise<ExpenseWithDetails> {
+  async createExpenseWithSplits(
+    data: CreateExpenseData,
+    activity: ActivityEventInput,
+  ): Promise<ExpenseWithDetails> {
     return prisma.$transaction(async (tx) => {
       const expense = await tx.expense.create({
         data: {
@@ -88,6 +97,16 @@ export class ExpenseRepository {
             include: { user: { select: safeUserSelect } },
           },
         },
+      });
+
+      await createActivityEvent(tx, {
+        groupId: expense.groupId,
+        userId: activity.userId,
+        type: activity.type,
+        message: activity.message,
+        amountMinorUnits: expense.amountMinorUnits,
+        currencyCode: expense.currencyCode,
+        occurredAt: expense.createdAt,
       });
 
       return expense;

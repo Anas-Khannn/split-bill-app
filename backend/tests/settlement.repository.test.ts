@@ -43,6 +43,12 @@ const idempotency: IdempotencyContext = {
   requestHash: "hash-of-request-a",
 };
 
+const activity = {
+  userId: "alice-1",
+  type: "SETTLEMENT_ADDED" as const,
+  message: "recorded a settlement",
+};
+
 function storedSettlement(overrides: Record<string, unknown> = {}) {
   return {
     id: "settlement-1",
@@ -88,6 +94,9 @@ function makeTx() {
       create: vi.fn(),
       findUnique: vi.fn(),
     },
+    activityEvent: {
+      create: vi.fn(),
+    },
   };
 }
 
@@ -103,7 +112,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("SettlementRepository.createSettlementWithIdempotency", () => {
+describe("SettlementRepository.createSettlement (idempotent)", () => {
   it("claims the idempotency key and creates the settlement in one transaction", async () => {
     const tx = makeTx();
     tx.idempotencyRecord.findUnique.mockResolvedValue(null);
@@ -113,7 +122,7 @@ describe("SettlementRepository.createSettlementWithIdempotency", () => {
     mockPrisma.$transaction.mockImplementation(runTransaction(tx));
 
     const repository = makeRepository();
-    const result = await repository.createSettlementWithIdempotency(createData, idempotency);
+    const result = await repository.createSettlement(createData, idempotency, activity);
 
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(tx.idempotencyRecord.findUnique).toHaveBeenCalledWith({
@@ -145,7 +154,7 @@ describe("SettlementRepository.createSettlementWithIdempotency", () => {
     mockPrisma.$transaction.mockImplementation(runTransaction(tx));
 
     const repository = makeRepository();
-    const result = await repository.createSettlementWithIdempotency(createData, idempotency);
+    const result = await repository.createSettlement(createData, idempotency, activity);
 
     expect(tx.settlement.create).not.toHaveBeenCalled();
     expect(tx.settlement.findUnique).toHaveBeenCalledWith({
@@ -164,7 +173,7 @@ describe("SettlementRepository.createSettlementWithIdempotency", () => {
 
     const repository = makeRepository();
     await expect(
-      repository.createSettlementWithIdempotency(createData, idempotency),
+      repository.createSettlement(createData, idempotency, activity),
     ).rejects.toMatchObject({
       code: APP_ERRORS.IDEMPOTENCY_KEY_REUSED,
       statusCode: HTTP_STATUSES.CONFLICT,
@@ -181,7 +190,7 @@ describe("SettlementRepository.createSettlementWithIdempotency", () => {
 
     const repository = makeRepository();
     await expect(
-      repository.createSettlementWithIdempotency(createData, idempotency),
+      repository.createSettlement(createData, idempotency, activity),
     ).rejects.toMatchObject({
       code: APP_ERRORS.IDEMPOTENCY_KEY_REUSED,
       statusCode: HTTP_STATUSES.CONFLICT,
@@ -198,7 +207,7 @@ describe("SettlementRepository.createSettlementWithIdempotency", () => {
 
     const repository = makeRepository();
     await expect(
-      repository.createSettlementWithIdempotency(createData, idempotency),
+      repository.createSettlement(createData, idempotency, activity),
     ).rejects.toMatchObject({
       code: APP_ERRORS.IDEMPOTENCY_CONFLICT,
       statusCode: HTTP_STATUSES.CONFLICT,
@@ -218,7 +227,7 @@ describe("SettlementRepository.createSettlementWithIdempotency", () => {
     mockPrisma.$transaction.mockImplementation(runTransaction(tx));
 
     const repository = makeRepository();
-    const result = await repository.createSettlementWithIdempotency(createData, idempotency);
+    const result = await repository.createSettlement(createData, idempotency, activity);
 
     expect(tx.idempotencyRecord.deleteMany).toHaveBeenCalledWith({
       where: { id: "idem-1" },
@@ -238,7 +247,7 @@ describe("SettlementRepository.createSettlementWithIdempotency", () => {
     mockPrisma.settlement.findUnique.mockResolvedValue(storedSettlement());
 
     const repository = makeRepository();
-    const result = await repository.createSettlementWithIdempotency(createData, idempotency);
+    const result = await repository.createSettlement(createData, idempotency, activity);
 
     expect(mockPrisma.settlement.create).not.toHaveBeenCalled();
     expect(mockPrisma.settlement.findUnique).toHaveBeenCalledWith({
@@ -257,7 +266,7 @@ describe("SettlementRepository.createSettlementWithIdempotency", () => {
 
     const repository = makeRepository();
     await expect(
-      repository.createSettlementWithIdempotency(createData, idempotency),
+      repository.createSettlement(createData, idempotency, activity),
     ).rejects.toThrow("db boom");
     expect(tx.idempotencyRecord.update).not.toHaveBeenCalled();
   });

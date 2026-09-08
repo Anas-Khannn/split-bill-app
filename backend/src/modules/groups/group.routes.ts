@@ -31,6 +31,8 @@ import {
   getGroupSettlements,
 } from "../settlements/settlement.controller.js";
 import { requireIdempotencyKey } from "../idempotency/validate.js";
+import { activityGroupParamsSchema, activityQuerySchema } from "../activity/validators.js";
+import { getGroupActivity } from "../activity/activity.controller.js";
 
 const router = Router();
 
@@ -106,6 +108,13 @@ router.get(
   authenticate,
   validate({ params: settlementGroupParamsSchema }),
   asyncHandler(getGroupSettlements),
+);
+
+router.get(
+  "/:id/activity",
+  authenticate,
+  validate({ params: activityGroupParamsSchema, query: activityQuerySchema }),
+  asyncHandler(getGroupActivity),
 );
 
 export default router;
