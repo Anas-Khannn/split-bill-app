@@ -210,6 +210,32 @@ Readiness check. Verifies database connectivity.
 - `200 { "status": "ready" }` — database is reachable
 - `503 { "status": "unavailable", "message": "Service is not ready yet." }` — database is unreachable
 
+## Request Tracing
+
+Every HTTP request receives a **request/correlation ID** so calls can be traced
+through logs and matched to responses.
+
+- Each response includes the header:
+
+  ```
+  X-Request-Id: <request-id>
+  ```
+
+- When the client does **not** send an `X-Request-Id`, the server generates a
+  cryptographically strong **UUID v4** and returns it in the response header.
+- A client may supply its own safe tracing ID (≤128 characters, containing only
+  letters, digits, `-`, `_`, and `.`) via the `X-Request-Id` header; it is echoed
+  back when valid. Oversized, malformed, or control-character values are rejected
+  and replaced with a newly generated UUID.
+- The ID is attached to every request as `req.requestId` and is included in
+  centralized request-completion logs (`requestId`, `method`, `path`,
+  `statusCode`, `durationMs`).
+- Request IDs are **tracing identifiers only** — they are never used for
+  authentication or authorization, and they are present (via the response header)
+  on success and error responses alike, including 401/403/404/500 flows.
+- Request-completion logging never includes authorization headers, tokens,
+  cookies, request/response bodies, or other sensitive data.
+
 ## Error Handling
 
 All errors are returned in a consistent format:
