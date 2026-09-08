@@ -1,5 +1,12 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import { APP_ERRORS } from "../../constants/app-errors.js";
+import { ConflictError } from "../../errors/app.error.js";
+import {
+  IDEMPOTENCY_OPERATIONS,
+  IDEMPOTENCY_RECORD_TTL_MS,
+} from "../idempotency/idempotency.constants.js";
+import { reconcileIdempotencyRecord, type IdempotencyContext } from "../idempotency/reconcile.js";
 import type { ExpenseForBalance, SettlementForBalance } from "./balance.util.js";
 import {
   createActivityEvent,
@@ -125,39 +132,88 @@ export class SettlementRepository {
     return settlements;
   }
 
-  /**
-   * Creates a settlement and its settlement-added activity event atomically in
-   * a single transaction.
+/**
+   * Creates a settlement and its settlement-added activity event atomically,
+   * protected against duplicates by the idempotency record.
    */
   async createSettlement(
     data: SettlementCreateData,
+    idempotency: IdempotencyContext,
     activity: ActivityEventInput,
   ): Promise<SettlementRecord> {
-    return prisma.$transaction(async (tx) => {
-      const settlement = await tx.settlement.create({
-        data: {
-          groupId: data.groupId,
-          payerId: data.payerId,
-          payeeId: data.payeeId,
-          amountMinorUnits: data.amountMinorUnits,
-          currencyCode: data.currencyCode,
-          settledAt: data.settledAt,
-        },
-        include: settlementInclude,
-      });
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const existing = await tx.idempotencyRecord.findUnique({
+          where: { key: idempotency.key },
+        });
 
-      await createActivityEvent(tx, {
-        groupId: settlement.groupId,
-        userId: activity.userId,
-        type: activity.type,
-        message: activity.message,
-        amountMinorUnits: settlement.amountMinorUnits,
-        currencyCode: settlement.currencyCode,
-        occurredAt: settlement.createdAt,
-      });
+        if (existing) {
+          const outcome = reconcileIdempotencyRecord(existing, idempotency, new Date());
+          if (outcome === "replay") {
+            return this.replaySettlement(tx, existing);
+          }
+          await tx.idempotencyRecord.deleteMany({ where: { id: existing.id } });
+        }
 
-      return settlement;
-    });
+        const claim = await tx.idempotencyRecord.create({
+          data: {
+            key: idempotency.key,
+            userId: idempotency.userId,
+            requestHash: idempotency.requestHash,
+            status: "PENDING",
+            operation: IDEMPOTENCY_OPERATIONS.SETTLEMENT_CREATE,
+            scope: data.groupId,
+            expiresAt: new Date(Date.now() + IDEMPOTENCY_RECORD_TTL_MS),
+          },
+        });
+
+        const settlement = await tx.settlement.create({
+          data: {
+            groupId: data.groupId,
+            payerId: data.payerId,
+            payeeId: data.payeeId,
+            amountMinorUnits: data.amountMinorUnits,
+            currencyCode: data.currencyCode,
+            settledAt: data.settledAt,
+          },
+          include: settlementInclude,
+        });
+
+        await createActivityEvent(tx, {
+          groupId: settlement.groupId,
+          userId: activity.userId,
+          type: activity.type,
+          message: activity.message,
+          amountMinorUnits: settlement.amountMinorUnits,
+          currencyCode: settlement.currencyCode,
+          occurredAt: settlement.createdAt,
+        });
+
+        await tx.idempotencyRecord.update({
+          where: { id: claim.id },
+          data: { status: "COMPLETED", resourceId: settlement.id },
+        });
+
+        return settlement;
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const existing = await prisma.idempotencyRecord.findUnique({
+          where: { key: idempotency.key },
+        });
+        if (existing) {
+          const outcome = reconcileIdempotencyRecord(existing, idempotency, new Date());
+          if (outcome === "replay") {
+            return this.replaySettlement(prisma, existing);
+          }
+        }
+        throw new ConflictError(
+          APP_ERRORS.IDEMPOTENCY_CONFLICT,
+          "A request with this Idempotency-Key is already being processed.",
+        );
+      }
+      throw error;
+    }
   }
 
   findSettlementById(id: string): Promise<SettlementRecord | null> {
@@ -173,5 +229,31 @@ export class SettlementRepository {
       orderBy: { settledAt: "desc" },
       include: settlementInclude,
     });
+  }
+
+  private async replaySettlement(
+    client: Pick<Prisma.TransactionClient, "settlement">,
+    record: { resourceId: string | null },
+  ): Promise<SettlementRecord> {
+    if (!record.resourceId) {
+      throw new ConflictError(
+        APP_ERRORS.IDEMPOTENCY_INVALID_STATE,
+        "The idempotency record is in an unexpected state.",
+      );
+    }
+
+    const settlement = await client.settlement.findUnique({
+      where: { id: record.resourceId },
+      include: settlementInclude,
+    });
+
+    if (!settlement) {
+      throw new ConflictError(
+        APP_ERRORS.IDEMPOTENCY_INVALID_STATE,
+        "The cached resource for this Idempotency-Key no longer exists.",
+      );
+    }
+
+    return settlement;
   }
 }

@@ -1,5 +1,6 @@
 import { APP_ERRORS } from "../../constants/app-errors.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors/app.error.js";
+import type { IdempotencyContext } from "../idempotency/reconcile.js";
 import { SettlementRepository, type SettlementRecord } from "./settlement.repository.js";
 import { calculateBalances } from "./balance.util.js";
 
@@ -61,6 +62,7 @@ export class SettlementService {
   async createSettlement(
     requesterId: string,
     input: CreateSettlementInput,
+    idempotency: IdempotencyContext,
   ): Promise<SettlementDto> {
     const { groupId } = input;
     const amountMinorUnits = BigInt(input.amountMinorUnits);
@@ -98,7 +100,7 @@ export class SettlementService {
       );
     }
 
-    const settlement = await this.repository.createSettlement(
+const settlement = await this.repository.createSettlement(
       {
         groupId,
         payerId: input.payerId,
@@ -107,6 +109,7 @@ export class SettlementService {
         currencyCode: "PKR",
         settledAt: new Date(),
       },
+      idempotency,
       {
         userId: requesterId,
         type: "SETTLEMENT_ADDED",

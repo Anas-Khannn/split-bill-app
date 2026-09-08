@@ -61,6 +61,11 @@ backend/
 │   │       ├── settlement.routes.ts
 │   │       ├── settlement.service.ts
 │   │       └── validators.ts
+│   │   ├── idempotency/           # Idempotency protection for financial operations
+│   │       ├── validate.ts        # Idempotency-Key header validation middleware
+│   │       ├── reconcile.ts       # Idempotency record state reconciliation
+│   │       ├── request-hash.ts    # Deterministic SHA-256 request fingerprint
+│   │       └── idempotency.constants.ts
 │   │   └── activity/              # Activity feed & audit event feature module
 │   │       ├── activity.controller.ts
 │   │       ├── activity.repository.ts
@@ -89,6 +94,8 @@ backend/
 │   ├── split.util.test.ts        # Split calculation unit tests
 │   ├── settlement.api.test.ts    # Balance & settlement endpoint integration tests (mocked DB)
 │   ├── settlement.service.test.ts# Balance & settlement service unit tests (mocked repository)
+│   ├── settlement.repository.test.ts # Settlement idempotency transaction tests (mocked DB)
+│   ├── idempotency.test.ts        # Request-hash and reconciliation unit tests
 │   ├── activity.api.test.ts      # Activity endpoint integration tests (mocked DB)
 │   ├── activity.service.test.ts  # Activity service unit tests (mocked repository)
 │   ├── activity.creation.test.ts # Activity event creation tests (mocked repositories)
@@ -704,6 +711,16 @@ Response examples:
 Records a payment from one group member (sender) to another (receiver) to settle
 debts. The authenticated requester must be a group member.
 
+This operation is **idempotency-protected**: every request must carry an
+`Idempotency-Key` header so that retries can never create duplicate settlements.
+See [Idempotency](#idempotency).
+
+Request header:
+
+```
+Idempotency-Key: <unique-key>
+```
+
 Request body:
 
 ```json
@@ -719,11 +736,16 @@ Fields:
 - `payeeId` — required, receiver must be a group member and different from `payerId`
 - `amountMinorUnits` — required, positive integer minor units
 
-- `201` — settlement created; returns `{ success, data: { settlement } }`
-- `400` — validation failed, or sender equals receiver
+- `201` — settlement created; returns `{ success, data: { settlement } }`. A retry
+  with the same key and body returns the original settlement instead of creating
+  a duplicate.
+- `400` — validation failed, sender equals receiver, or the `Idempotency-Key`
+  header is missing/invalid
 - `401` — missing/invalid token
 - `403` — requester, sender, or receiver is not a group member
 - `404` — group does not exist
+- `409` — the same `Idempotency-Key` was already used with a different request or
+  by a different user, or a request with this key is already being processed
 
 ### GET /api/v1/groups/:groupId/settlements
 
@@ -752,8 +774,68 @@ architecture as `auth`, `groups`, and `expenses`. The balance math is factored
 into a pure, deterministic module (`balance.util.ts`) that is unit-tested
 directly. The service owns membership authorization and throws grouped `AppError`
 subclasses (`BadRequestError`, `ForbiddenError`, `NotFoundError`) that the
-centralized error handler serializes. Settlements are recorded as a single atomic
-Prisma write.
+centralized error handler serializes. Settlement creation claims and completes
+an idempotency record inside the same Prisma transaction that records the
+settlement, so duplicate requests can never produce duplicate financial records.
+
+## Idempotency
+
+State-changing financial operations are protected against duplicate processing
+caused by client retries. The mechanism is persistent (backed by the
+`IdempotencyRecord` table), enforced at the database level, and transactional —
+it does not rely on in-memory state, so it remains correct across restarts and
+multiple server instances.
+
+### Supported Endpoints
+
+| Endpoint | Idempotency |
+|---|---|
+| `POST /api/v1/groups/:groupId/settlements` | Required `Idempotency-Key` header |
+
+### Providing an Idempotency-Key
+
+Send a unique key in the request header for each logical operation:
+
+```
+POST /api/v1/groups/:groupId/settlements
+Authorization: Bearer <jwt>
+Idempotency-Key: 9f8e7d6c5b4a39281706
+Content-Type: application/json
+
+{
+  "payerId": "<sender-uuid>",
+  "payeeId": "<receiver-uuid>",
+  "amountMinorUnits": 500
+}
+```
+
+The key must be 8–128 characters long and may contain only letters, digits,
+`_`, `-`, and `.` (UUIDs work well). The same key must be reused for every
+retry of the same logical request and **must never be reused for a different
+request**.
+
+The key is treated as request metadata for duplicate detection, never as a
+financial or business field, and is never returned in responses or logged.
+
+### Retry Semantics
+
+- **First request:** the settlement is created and the key is recorded.
+- **Retry with the same key and the same body:** no new settlement is created;
+  the original settlement is returned.
+- **Retry with the same key but a different body:** rejected with HTTP 409.
+- **Reuse of a key issued to a different user:** rejected with HTTP 409.
+- **Two concurrent requests using the same key:** the database's unique
+  constraint guarantees that only one settlement is created; the losing request
+  receives the original result.
+- **Failed operation:** the idempotency record and the settlement are written in
+  one transaction, so a failure rolls back both and a legitimate retry succeeds.
+
+### Key Lifetime
+
+Idempotency records expire 24 hours after first use. Expired keys are reclaimed
+and can be reused for a new operation. No automatic cleanup job is required for
+correctness; a background sweep that removes records where `expiresAt` is in the
+past can be introduced later for storage hygiene.
 
 ## Activity API
 
@@ -849,6 +931,7 @@ The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as th
 | `Settlement` | A payment recorded from one user to another to settle debts |
 | `ActivityEvent` | Activity feed entry capturing expenses, settlements, group events |
 | `RefreshToken` | JWT refresh token hash for future auth session management |
+| `IdempotencyRecord` | Persistent idempotency deduplication for financial operations |
 
 ### Enums
 
@@ -856,6 +939,7 @@ The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as th
 |---|---|
 | `SplitType` | `EQUAL`, `EXACT` |
 | `ActivityType` | `EXPENSE_ADDED`, `SETTLEMENT_ADDED`, `GROUP_CREATED`, `MEMBER_ADDED` |
+| `IdempotencyStatus` | `PENDING` (in-flight), `COMPLETED` |
 
 ### Important Relationship Decisions
 
@@ -866,6 +950,7 @@ The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as th
 - **Expense → ExpenseSplit:** `onDelete: Cascade` — deleting an expense removes all splits.
 - **User → Expense (payer), ExpenseSplit, Settlement (payer/payee), ActivityEvent (actor):** `onDelete: Restrict` — prevents deleting a user that has financial records.
 - **User → RefreshToken:** `onDelete: Cascade` — deleting a user removes their refresh tokens.
+- **User → IdempotencyRecord:** `onDelete: Cascade` — deleting a user removes their idempotency keys.
 
 ### Indexing
 
@@ -886,6 +971,9 @@ The Prisma schema is located at `prisma/schema.prisma` and uses PostgreSQL as th
 | `ActivityEvent` | `occurredAt` | Time-range queries, chronological feed |
 | `RefreshToken` | `tokenHash` (unique) | Fast token lookup during auth; prevents duplicates |
 | `RefreshToken` | `userId` | Look up all tokens for a user |
+| `IdempotencyRecord` | `key` (unique) | Prevent duplicate idempotency keys across all users |
+| `IdempotencyRecord` | `userId` | Look up keys issued to a user |
+| `IdempotencyRecord` | `expiresAt` | Expiry sweep and lifetime queries |
 | `User` | `email` (unique) | Login lookup; prevents duplicate emails |
 
 ## Money Representation
@@ -971,7 +1059,9 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 - Group membership authorization for settlements (requester, sender, and receiver)
 - Positive-amount and sender-receiver validation for settlements
 - Cross-group access protection for settlement detail (IDOR guard)
-- Test suite (Vitest + Supertest, 219 tests, all passing without a live DB)
+- **Idempotency protection for settlement creation** — persistent, transactional, database-enforced duplicate prevention via the `IdempotencyRecord` table
+- `Idempotency-Key` header validation (Zod), user/request binding, replay of original results, and concurrent-duplicate protection
+- Pure, unit-tested idempotency reconciliation (`reconcile.ts`) and request fingerprinting (`request-hash.ts`)
 - **Activity API** (`/api/v1/groups/:groupId/activity`)
 - Group membership authorization for activity reads (IDOR guard)
 - Deterministic, database-level ordering and pagination for the activity feed
@@ -979,7 +1069,7 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 - Activity events (`GROUP_CREATED`, `MEMBER_ADDED`, `EXPENSE_ADDED`, `SETTLEMENT_ADDED`)
   recorded in the same Prisma transactions as the domain operations that produce them
 - Safe actor/user projection (password hashes never exposed)
-- Test suite (Vitest + Supertest, 227 tests, all passing without a live DB)
+- Test suite (Vitest + Supertest, all passing without a live DB)
 
 ## Not Yet Implemented
 
@@ -988,6 +1078,8 @@ The following features are **NOT implemented** in this chunk:
 - Email verification / password reset
 - User management / profile update endpoints
 - Expense delete endpoint (creation, list, and detail are implemented)
+- Activity feed generation logic
+- Idempotency protection for expense creation (only settlement creation is protected in this PR)
 - Member-removed activity events (the `ActivityType` enum does not yet include a removal type)
 - Notifications / real-time activity pushes (the feed is read on demand)
 

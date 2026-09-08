@@ -92,6 +92,12 @@ interface TxStub {
   expense: { create: ReturnType<typeof vi.fn> };
   settlement: { create: ReturnType<typeof vi.fn> };
   activityEvent: { create: ReturnType<typeof vi.fn> };
+  idempotencyRecord: {
+    findUnique: ReturnType<typeof vi.fn>;
+    create: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    deleteMany: ReturnType<typeof vi.fn>;
+  };
 }
 
 function makeTx(): TxStub {
@@ -101,6 +107,12 @@ function makeTx(): TxStub {
     expense: { create: vi.fn().mockResolvedValue(storedExpense) },
     settlement: { create: vi.fn().mockResolvedValue(storedSettlement) },
     activityEvent: { create: vi.fn().mockResolvedValue({ id: "event-1" }) },
+    idempotencyRecord: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({ id: "idem-1", status: "PENDING" }),
+      update: vi.fn().mockResolvedValue({}),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
   };
 }
 
@@ -298,6 +310,11 @@ describe("Settlement activity transaction consistency", () => {
         settledAt: new Date("2026-01-01T00:00:00Z"),
       },
       {
+        key: "key-12345678",
+        userId: "owner-1",
+        requestHash: "hash-of-request",
+      },
+      {
         userId: "owner-1",
         type: "SETTLEMENT_ADDED",
         message: "recorded a settlement",
@@ -337,6 +354,11 @@ describe("Settlement activity transaction consistency", () => {
           amountMinorUnits: 500n,
           currencyCode: "PKR",
           settledAt: new Date("2026-01-01T00:00:00Z"),
+        },
+        {
+          key: "key-12345678",
+          userId: "owner-1",
+          requestHash: "hash-of-request",
         },
         {
           userId: "owner-1",

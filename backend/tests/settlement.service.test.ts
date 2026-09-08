@@ -124,13 +124,19 @@ describe("SettlementService.getGroupBalances", () => {
 });
 
 describe("SettlementService.createSettlement", () => {
+  const idempotencyContext = {
+    key: "key-12345678",
+    userId: "owner-1",
+    requestHash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  };
+
   it("creates a settlement and converts bigint amounts", async () => {
     repository.findGroupById.mockResolvedValue(group);
     repository.findGroupMembers.mockResolvedValue(members(memberIds));
     repository.createSettlement.mockResolvedValue(storedSettlement());
 
     const service = makeService();
-    const result = await service.createSettlement("owner-1", defaultInput);
+    const result = await service.createSettlement("owner-1", defaultInput, idempotencyContext);
 
     expect(repository.createSettlement).toHaveBeenCalledTimes(1);
     const data = repository.createSettlement.mock.calls[0][0];
@@ -140,6 +146,24 @@ describe("SettlementService.createSettlement", () => {
     expect(data.currencyCode).toBe("PKR");
     expect(data.settledAt).toBeInstanceOf(Date);
     expect(result.amountMinorUnits).toBe(500);
+  });
+
+  it("forwards the idempotency context and activity event to the repository", async () => {
+    repository.findGroupById.mockResolvedValue(group);
+    repository.findGroupMembers.mockResolvedValue(members(memberIds));
+    repository.createSettlement.mockResolvedValue(storedSettlement());
+
+    const service = makeService();
+    await service.createSettlement("owner-1", defaultInput, idempotencyContext);
+
+    const forwarded = repository.createSettlement.mock.calls[0][1];
+    expect(forwarded).toEqual(idempotencyContext);
+    const activity = repository.createSettlement.mock.calls[0][2];
+    expect(activity).toMatchObject({
+      userId: "owner-1",
+      type: "SETTLEMENT_ADDED",
+      message: "recorded a settlement",
+    });
   });
 
   it("throws NOT_FOUND when the group does not exist", async () => {

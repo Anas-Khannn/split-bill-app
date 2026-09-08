@@ -181,14 +181,22 @@ describe("Activity creation on domain operations", () => {
     });
 
     const service = new SettlementService(settlementRepository);
-    await service.createSettlement("owner-1", {
-      groupId: "group-1",
-      payerId: "bob",
-      payeeId: "alice",
-      amountMinorUnits: 500,
-    });
+    await service.createSettlement(
+      "owner-1",
+      {
+        groupId: "group-1",
+        payerId: "bob",
+        payeeId: "alice",
+        amountMinorUnits: 500,
+      },
+      {
+        key: "key-12345678",
+        userId: "owner-1",
+        requestHash: "hash-of-request",
+      },
+    );
 
-    const activityArg = settlementRepository.createSettlement.mock.calls[0][1];
+    const activityArg = settlementRepository.createSettlement.mock.calls[0][2];
     expect(activityArg).toEqual({
       userId: "owner-1",
       type: "SETTLEMENT_ADDED",
