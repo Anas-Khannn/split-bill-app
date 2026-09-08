@@ -45,10 +45,11 @@ model User {
   memberships     GroupMember[]
   paidExpenses    Expense[]       @relation("ExpensePayer")
   expenseSplits   ExpenseSplit[]
-  settlementsPaid Settlement[]    @relation("SettlementPayer")
-  settlementsGot  Settlement[]    @relation("SettlementPayee")
-  activities      ActivityEvent[]
-  refreshTokens   RefreshToken[]
+  settlementsPaid   Settlement[]         @relation("SettlementPayer")
+  settlementsGot    Settlement[]         @relation("SettlementPayee")
+  activities        ActivityEvent[]
+  refreshTokens     RefreshToken[]
+  idempotencyKeys   IdempotencyRecord[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -176,4 +177,27 @@ model RefreshToken {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+enum IdempotencyStatus {
+  PENDING
+  COMPLETED
+}
+
+model IdempotencyRecord {
+  id          String            @id @default(uuid())
+  key         String            @unique
+  userId      String
+  requestHash String
+  status      IdempotencyStatus
+  operation   String
+  scope       String?
+  resourceId  String?
+  createdAt   DateTime          @default(now())
+  expiresAt   DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }

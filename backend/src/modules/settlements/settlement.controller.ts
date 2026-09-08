@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 
 import { HTTP_STATUSES } from "../../constants/http-statuses.js";
+import { createRequestHash } from "../idempotency/request-hash.js";
 import { SettlementService } from "./settlement.service.js";
 import { SettlementRepository } from "./settlement.repository.js";
 
@@ -20,12 +21,23 @@ export async function createSettlement(req: Request, res: Response): Promise<voi
     amountMinorUnits: number;
   };
 
-  const settlement = await settlementService.createSettlement(req.userId!, {
+  const requestHash = createRequestHash({
     groupId,
     payerId: body.payerId,
     payeeId: body.payeeId,
     amountMinorUnits: body.amountMinorUnits,
   });
+
+  const settlement = await settlementService.createSettlement(
+    req.userId!,
+    {
+      groupId,
+      payerId: body.payerId,
+      payeeId: body.payeeId,
+      amountMinorUnits: body.amountMinorUnits,
+    },
+    { key: req.idempotencyKey!, userId: req.userId!, requestHash },
+  );
 
   res.status(HTTP_STATUSES.CREATED).json({ success: true, data: { settlement } });
 }

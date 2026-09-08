@@ -30,6 +30,7 @@ import {
   getGroupBalances,
   getGroupSettlements,
 } from "../settlements/settlement.controller.js";
+import { requireIdempotencyKey } from "../idempotency/validate.js";
 
 const router = Router();
 
@@ -95,6 +96,7 @@ router.get(
 router.post(
   "/:id/settlements",
   authenticate,
+  requireIdempotencyKey,
   validate({ params: settlementGroupParamsSchema, body: createSettlementBodySchema }),
   asyncHandler(createSettlement),
 );

@@ -17,7 +17,7 @@ vi.mock("../src/modules/settlements/settlement.repository.js", async () => {
       findGroupMembers: vi.fn(),
       findExpensesForBalances: vi.fn(),
       findSettlementsForBalances: vi.fn(),
-      createSettlement: vi.fn(),
+      createSettlementWithIdempotency: vi.fn(),
       findSettlementById: vi.fn(),
       findSettlementsByGroupId: vi.fn(),
     })),
@@ -124,22 +124,40 @@ describe("SettlementService.getGroupBalances", () => {
 });
 
 describe("SettlementService.createSettlement", () => {
+  const idempotencyContext = {
+    key: "key-12345678",
+    userId: "owner-1",
+    requestHash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  };
+
   it("creates a settlement and converts bigint amounts", async () => {
     repository.findGroupById.mockResolvedValue(group);
     repository.findGroupMembers.mockResolvedValue(members(memberIds));
-    repository.createSettlement.mockResolvedValue(storedSettlement());
+    repository.createSettlementWithIdempotency.mockResolvedValue(storedSettlement());
 
     const service = makeService();
-    const result = await service.createSettlement("owner-1", defaultInput);
+    const result = await service.createSettlement("owner-1", defaultInput, idempotencyContext);
 
-    expect(repository.createSettlement).toHaveBeenCalledTimes(1);
-    const data = repository.createSettlement.mock.calls[0][0];
+    expect(repository.createSettlementWithIdempotency).toHaveBeenCalledTimes(1);
+    const data = repository.createSettlementWithIdempotency.mock.calls[0][0];
     expect(data.amountMinorUnits).toBe(500n);
     expect(data.payerId).toBe("bob");
     expect(data.payeeId).toBe("alice");
     expect(data.currencyCode).toBe("PKR");
     expect(data.settledAt).toBeInstanceOf(Date);
     expect(result.amountMinorUnits).toBe(500);
+  });
+
+  it("forwards the idempotency context to the repository", async () => {
+    repository.findGroupById.mockResolvedValue(group);
+    repository.findGroupMembers.mockResolvedValue(members(memberIds));
+    repository.createSettlementWithIdempotency.mockResolvedValue(storedSettlement());
+
+    const service = makeService();
+    await service.createSettlement("owner-1", defaultInput, idempotencyContext);
+
+    const forwarded = repository.createSettlementWithIdempotency.mock.calls[0][1];
+    expect(forwarded).toEqual(idempotencyContext);
   });
 
   it("throws NOT_FOUND when the group does not exist", async () => {
@@ -150,7 +168,7 @@ describe("SettlementService.createSettlement", () => {
       code: APP_ERRORS.GROUP_NOT_FOUND,
       statusCode: HTTP_STATUSES.NOT_FOUND,
     });
-    expect(repository.createSettlement).not.toHaveBeenCalled();
+    expect(repository.createSettlementWithIdempotency).not.toHaveBeenCalled();
   });
 
   it("throws FORBIDDEN when the requester is not a group member", async () => {
@@ -162,7 +180,7 @@ describe("SettlementService.createSettlement", () => {
       code: APP_ERRORS.NOT_GROUP_MEMBER,
       statusCode: HTTP_STATUSES.FORBIDDEN,
     });
-    expect(repository.createSettlement).not.toHaveBeenCalled();
+    expect(repository.createSettlementWithIdempotency).not.toHaveBeenCalled();
   });
 
   it("throws BAD_REQUEST when sender and receiver are the same user", async () => {
@@ -176,7 +194,7 @@ describe("SettlementService.createSettlement", () => {
       code: APP_ERRORS.SETTLEMENT_USERS_MUST_DIFFER,
       statusCode: HTTP_STATUSES.BAD_REQUEST,
     });
-    expect(repository.createSettlement).not.toHaveBeenCalled();
+    expect(repository.createSettlementWithIdempotency).not.toHaveBeenCalled();
   });
 
   it("throws FORBIDDEN when the sender is not a group member", async () => {
@@ -190,7 +208,7 @@ describe("SettlementService.createSettlement", () => {
       code: APP_ERRORS.SETTLEMENT_PAYER_NOT_GROUP_MEMBER,
       statusCode: HTTP_STATUSES.FORBIDDEN,
     });
-    expect(repository.createSettlement).not.toHaveBeenCalled();
+    expect(repository.createSettlementWithIdempotency).not.toHaveBeenCalled();
   });
 
   it("throws FORBIDDEN when the receiver is not a group member", async () => {
@@ -204,7 +222,7 @@ describe("SettlementService.createSettlement", () => {
       code: APP_ERRORS.SETTLEMENT_PAYEE_NOT_GROUP_MEMBER,
       statusCode: HTTP_STATUSES.FORBIDDEN,
     });
-    expect(repository.createSettlement).not.toHaveBeenCalled();
+    expect(repository.createSettlementWithIdempotency).not.toHaveBeenCalled();
   });
 });
 
