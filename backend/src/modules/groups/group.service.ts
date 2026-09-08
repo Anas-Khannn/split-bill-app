@@ -18,7 +18,11 @@ export class GroupService {
   constructor(private repository: GroupRepository) {}
 
   async createGroup(userId: string, data: { name: string }): Promise<GroupResult> {
-    const group = await this.repository.createGroupWithOwner(userId, data);
+    const group = await this.repository.createGroupWithOwner(userId, data, {
+      userId,
+      type: "GROUP_CREATED",
+      message: "created the group",
+    });
 
     return {
       id: group.id,
@@ -117,7 +121,11 @@ export class GroupService {
       );
     }
 
-    const member = await this.repository.addGroupMember(groupId, memberId);
+    const member = await this.repository.addGroupMember(groupId, memberId, {
+      userId,
+      type: "MEMBER_ADDED",
+      message: `added ${targetUser.name} to the group`,
+    });
 
     return {
       id: member.id,

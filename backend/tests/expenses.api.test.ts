@@ -121,7 +121,10 @@ describe("Expenses API", () => {
       ]);
       const created = storedExpense();
       mockPrisma.$transaction.mockImplementation(async (fn) => {
-        const tx = { expense: { create: vi.fn().mockResolvedValue(created) } };
+        const tx = {
+          expense: { create: vi.fn().mockResolvedValue(created) },
+          activityEvent: { create: vi.fn().mockResolvedValue({ id: "event-1" }) },
+        };
         return fn(tx);
       });
 

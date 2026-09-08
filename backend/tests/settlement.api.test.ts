@@ -14,6 +14,7 @@ function signToken(userId: string): string {
 vi.mock("../src/db/prisma.js", async () => {
   return {
     prisma: {
+      $transaction: vi.fn(),
       group: {
         findUnique: vi.fn(),
       },
@@ -165,7 +166,13 @@ describe("Settlements API", () => {
     it("creates a settlement and returns 201", async () => {
       mockPrisma.group.findUnique.mockResolvedValue(group);
       mockPrisma.groupMember.findMany.mockResolvedValue(memberUsers());
-      mockPrisma.settlement.create.mockResolvedValue(storedSettlement());
+      mockPrisma.$transaction.mockImplementation(async (fn) => {
+        const tx = {
+          settlement: { create: vi.fn().mockResolvedValue(storedSettlement()) },
+          activityEvent: { create: vi.fn().mockResolvedValue({ id: "event-1" }) },
+        };
+        return fn(tx);
+      });
 
       const res = await request(app)
         .post("/api/v1/groups/group-1/settlements")
