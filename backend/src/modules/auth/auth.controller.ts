@@ -22,6 +22,18 @@ export async function login(req: Request, res: Response): Promise<void> {
   res.status(HTTP_STATUSES.OK).json({ success: true, data: result });
 }
 
+export async function refresh(req: Request, res: Response): Promise<void> {
+  const { refreshToken } = req.body as { refreshToken: string };
+  const result = await authService.refresh(refreshToken);
+  res.status(HTTP_STATUSES.OK).json({ success: true, data: result });
+}
+
+export async function logout(req: Request, res: Response): Promise<void> {
+  const { refreshToken } = req.body as { refreshToken: string };
+  const result = await authService.logout(refreshToken);
+  res.status(HTTP_STATUSES.OK).json({ success: true, data: result });
+}
+
 export async function getMe(req: Request, res: Response): Promise<void> {
   const user = await authService.getMe(req.userId!);
   res.status(HTTP_STATUSES.OK).json({ success: true, data: { user } });
