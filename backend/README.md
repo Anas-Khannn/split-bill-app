@@ -33,6 +33,7 @@ backend/
 │   ├── middleware/
 │   │   ├── authenticate.ts       # JWT bearer-token auth for protected routes
 │   │   ├── errorHandler.ts       # Centralized error handling + 404
+│   │   ├── rateLimiter.ts        # API rate limiting (general + auth tiers)
 │   │   └── validate.ts           # Zod validation middleware
 │   ├── modules/
 │   │   ├── auth/                 # Authentication feature module
@@ -106,6 +107,7 @@ backend/
 │   ├── asyncHandler.test.ts      # Async handler middleware tests
 │   ├── health.test.ts            # Readiness endpoint tests (mocked DB)
 │   └── middleware.test.ts        # Validation middleware tests
+│   └── rate-limit.test.ts        # Rate limiting tests (envelope, headers, window reset, per-IP isolation)
 ├── .env.example
 ├── .gitignore
 ├── eslint.config.js
@@ -142,6 +144,9 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 | `JWT_SECRET` | Yes | — | Secret used to sign JSON Web Tokens. Generate a strong random value and never commit it. |
 | `JWT_EXPIRES_IN` | No | `7d` | Access token lifetime (e.g. `7d`, `1h`) |
 | `REFRESH_TOKEN_TTL_DAYS` | No | `30` | Refresh-token session lifetime in days |
+| `RATE_LIMIT_WINDOW_MS` | No | `900000` | Rate-limit window length in milliseconds (15 minutes) |
+| `RATE_LIMIT_MAX` | No | `100` | Max requests per client IP per window for non-auth endpoints |
+| `AUTH_RATE_LIMIT_MAX` | No | `20` | Max requests per client IP per window for `/api/v1/auth/*` |
 
 ### Setting Up Your Local Database
 
@@ -231,6 +236,42 @@ Validation errors include field-level detail:
 Internal stack traces are never exposed in production responses.
 
 HTTP status codes use the `HTTP_STATUSES` enum (`src/constants/http-statuses.ts`) for self-documenting, maintainable code.
+
+## Rate Limiting
+
+All `/api/v1` requests are rate-limited per client IP to protect the API against
+abuse (brute-force login attempts, scraping, and runaway clients). Implemented
+with `express-rate-limit` in `src/middleware/rateLimiter.ts`.
+
+Two tiers with independent counters:
+
+| Tier | Mount | Default limit per window |
+|---|---|---|
+| General | all `/api/v1` endpoints | `RATE_LIMIT_MAX` (100) |
+| Auth | `/api/v1/auth/*` | `AUTH_RATE_LIMIT_MAX` (20) |
+
+The window length is controlled by `RATE_LIMIT_WINDOW_MS` (default `900000` ms =
+15 minutes). Auth routes first pass the global limiter and then the stricter auth
+limiter, so they are subject to both counters.
+
+- Exceeding the limit returns **HTTP 429** with the standard API error envelope:
+  `{ "success": false, "message": "Too many requests" }` and a `Retry-After`
+  header.
+- Responses include standard `RateLimit-*` headers (`RateLimit-Policy`,
+  `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`) so clients can
+  honor the limits proactively.
+- The default store is **in-memory and process-local** (no Redis dependency).
+  Counters are scoped per server instance and reset on restart; for horizontal
+  scaling behind a load balancer, replace the store with a shared one (e.g.
+  `rate-limit-redis`).
+- The client identity is `req.ip`. The app intentionally does **not** trust
+  `X-Forwarded-For` (`trust proxy` is off), so behind a reverse proxy the proxy's
+  IP is the identity seen by the API. Configure the app's proxy trust settings if
+  real client IPs are required in deployment.
+- The limiter makes **no database queries**, so a target cannot bypass limits by
+  hammering the database, and it never races against idempotency.
+- Limits are configurable via environment variables, see
+  [Environment Configuration](#environment-configuration).
 
 ## API Structure
 
@@ -1022,6 +1063,9 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 
 - TypeScript project configuration (strict mode)
 - Express application with middleware (CORS, Helmet, rate limiting, JSON parsing)
+- Centralized rate limiting via `express-rate-limit` — per-IP limiter for all
+  `/api/v1` endpoints plus a stricter tier for `/api/v1/auth/*`, with a 429 error
+  envelope, `RateLimit-*`/`Retry-After` headers, and env-tunable windows/limits
 - Centralized configuration via Zod-validated environment variables
 - Health check endpoints (liveness + database readiness)
 - Centralized error handling (application errors, validation errors, 404)
@@ -1082,6 +1126,9 @@ The following features are **NOT implemented** in this chunk:
 - Idempotency protection for expense creation (only settlement creation is protected in this PR)
 - Member-removed activity events (the `ActivityType` enum does not yet include a removal type)
 - Notifications / real-time activity pushes (the feed is read on demand)
+- Distributed rate-limit store (current counters are in-memory and process-local;
+  a shared store such as `rate-limit-redis` would be needed for multi-instance
+  deployments behind a load balancer)
 
 These will be built on top of this foundation in subsequent chunks.
 
