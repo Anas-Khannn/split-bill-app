@@ -39,6 +39,17 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
     return;
   }
 
+  if (
+    bodyParserError.type === "entity.too.large" ||
+    bodyParserError.status === HTTP_STATUSES.PAYLOAD_TOO_LARGE
+  ) {
+    res.status(HTTP_STATUSES.PAYLOAD_TOO_LARGE).json({
+      success: false,
+      message: "Request body too large.",
+    } satisfies ErrorResponse);
+    return;
+  }
+
   if (err instanceof AppError) {
     const body: ErrorResponse = {
       success: false,

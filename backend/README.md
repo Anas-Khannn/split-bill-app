@@ -28,6 +28,10 @@ backend/
 │   │   └── http-statuses.ts      # HTTP status code enum (meaningful names)
 │   ├── db/
 │   │   └── prisma.ts             # Centralized Prisma client & DB utilities
+│   ├── edge/                     # In-process application gateway/edge layer
+│   │   ├── index.ts              # Installs trust proxy + request guard
+│   │   ├── requestGuard.ts       # URL hygiene, body-size pre-check, request-ID normalization
+│   │   └── trustProxy.ts         # TRUST_PROXY parsing (req.ip resolution)
 │   ├── errors/
 │   │   └── app.error.ts          # Base AppError + specialized error classes
 │   ├── middleware/
@@ -35,6 +39,10 @@ backend/
 │   │   ├── errorHandler.ts       # Centralized error handling + 404
 │   │   ├── rateLimiter.ts        # API rate limiting (general + auth tiers)
 │   │   └── validate.ts           # Zod validation middleware
+│   ├── redis/                    # Redis infrastructure (infra, no domain logic)
+│   │   ├── redisClient.ts        # Lazy ioredis client, connect/disconnect, RedisLike contract
+│   │   ├── rateLimitStore.ts     # Redis-backed express-rate-limit store (Lua fixed window)
+│   │   └── distributedLock.ts    # TTL-bounded distributed lock (SET NX PX + Lua release)
 │   ├── modules/
 │   │   ├── auth/                 # Authentication feature module
 │   │   │   ├── auth.controller.ts
@@ -80,7 +88,8 @@ backend/
 │   │   └── index.ts              # Shared TypeScript types
 │   ├── utils/
 │   │   ├── asyncHandler.ts       # Wraps async controllers to forward errors
-│   │   └── logger.ts             # Lightweight structured JSON logger
+│   │   ├── logger.ts             # Lightweight structured JSON logger
+│   │   └── requestId.ts          # Shared X-Request-Id validation rules (edge + middleware)
 │   ├── app.ts                    # Express application (testable standalone)
 │   └── server.ts                 # Server startup: DB connect + graceful shutdown
 ├── tests/
@@ -108,6 +117,12 @@ backend/
 │   ├── health.test.ts            # Readiness endpoint tests (mocked DB)
 │   └── middleware.test.ts        # Validation middleware tests
 │   └── rate-limit.test.ts        # Rate limiting tests (envelope, headers, window reset, per-IP isolation)
+│   └── rate-limit.redis.test.ts  # Redis-backed rate limiting tests (shared state, fail-open, prefixes)
+│   └── distributed-lock.test.ts  # Distributed lock unit tests (token, TTL, release, degraded paths)
+│   └── settlement.lock.test.ts   # Settlement creation under the lock (409 conflict, degrade, success)
+│   └── edge.test.ts              # Edge layer tests (trust proxy, URL/body/request-ID guard, 413)
+│   └── helpers/
+│       └── fakeRedis.ts          # In-memory + failing Redis fakes for tests
 ├── .env.example
 ├── .gitignore
 ├── eslint.config.js
@@ -122,6 +137,7 @@ backend/
 
 - Node.js >= 18
 - PostgreSQL (required for database features and migrations)
+- Redis (optional at runtime; required for distributed rate limiting/locking)
 - npm
 
 ## Installation
@@ -147,6 +163,9 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 | `RATE_LIMIT_WINDOW_MS` | No | `900000` | Rate-limit window length in milliseconds (15 minutes) |
 | `RATE_LIMIT_MAX` | No | `100` | Max requests per client IP per window for non-auth endpoints |
 | `AUTH_RATE_LIMIT_MAX` | No | `20` | Max requests per client IP per window for `/api/v1/auth/*` |
+| `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string for distributed rate limiting/locking. Never commit one containing a password. |
+| `TRUST_PROXY` | No | `false` | Reverse-proxy trust level for `req.ip`. Use `true`/`1` (first hop), a hop count, or an Express value (`loopback`, subnet, ...). Leave `false` when no proxy is deployed. |
+| `DISTRIBUTED_LOCK_TTL_MS` | No | `10000` | TTL of distributed locks in milliseconds. Must exceed the longest protected operation. |
 
 ### Setting Up Your Local Database
 
@@ -286,18 +305,93 @@ limiter, so they are subject to both counters.
 - Responses include standard `RateLimit-*` headers (`RateLimit-Policy`,
   `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`) so clients can
   honor the limits proactively.
-- The default store is **in-memory and process-local** (no Redis dependency).
-  Counters are scoped per server instance and reset on restart; for horizontal
-  scaling behind a load balancer, replace the store with a shared one (e.g.
-  `rate-limit-redis`).
-- The client identity is `req.ip`. The app intentionally does **not** trust
-  `X-Forwarded-For` (`trust proxy` is off), so behind a reverse proxy the proxy's
-  IP is the identity seen by the API. Configure the app's proxy trust settings if
-  real client IPs are required in deployment.
+- The default store is **in-memory and process-local** (`MemoryStore`), used when
+  Redis is not connected. With a connected Redis (`REDIS_URL`), a **Redis-backed
+  store** (`src/redis/rateLimitStore.ts`) shares counters across every server
+  instance (true distributed protection). The store runs a fixed window anchored
+  on the first hit and stores counters under `rl:api:`/`rl:auth:` prefixes so the
+  two tiers never collide.
+- **Fail-open policy**: if Redis is down, rate limiting degrades to "allow" in
+  the same way the library's in-memory behavior works — the API stays up, the
+  failure is logged, and per-instance enforcement is lost until Redis recovers.
+  Attackers could bypass limits during an outage; availability is deliberately
+  preferred over enforcement.
+- The client identity is `req.ip`. `X-Forwarded-For` is only trusted when
+  `TRUST_PROXY` is set (see [Edge Layer / Gateway](#edge-layer--gateway)); the
+  app-level `trust proxy` setting derives from it. Leave it `false` when no
+  reverse proxy is deployed.
 - The limiter makes **no database queries**, so a target cannot bypass limits by
   hammering the database, and it never races against idempotency.
 - Limits are configurable via environment variables, see
   [Environment Configuration](#environment-configuration).
+
+## Redis Infrastructure
+
+Redis is used for two cross-instance concerns and is optional at runtime. It is
+accessed only through the narrow `RedisLike` contract in
+`src/redis/redisClient.ts` (a single lazy ioredis client, created with
+`enableOfflineQueue: false` so commands fail fast instead of queueing), so tests
+can inject an in-memory fake — the test suite runs without a live Redis server.
+
+- `connectRedis()` runs at startup and is **non-fatal**: if Redis is
+  unreachable the server keeps serving with degraded behavior (in-memory rate
+  limiting, uncoordinated locks) and every degradation is logged.
+- The client handles connection errors and auto-reconnect internally; the
+  connection string itself is never logged because it may embed credentials.
+
+## Distributed Locking
+
+`src/redis/distributedLock.ts` provides a single-instance, TTL-bounded
+distributed lock used to serialize genuinely concurrent operations across
+instances. Acquisition uses the atomic `SET key token NX PX ttl` primitive with
+a unique ownership token per holder; release runs a Lua script that only deletes
+the key when the token still matches, so one holder can never release another's
+lock.
+
+Policy:
+
+- **Lock held by another process** → HTTP 409 with the error code
+  `SETTLEMENT_CONCURRENT_LOCKED` (`ConflictError`); the caller is told to retry
+  shortly instead of queueing.
+- **Redis unavailable / error while acquiring** → the operation runs *without*
+  coordination and a warning is logged. The lock is a coordination hint, not a
+  correctness barrier: the database transaction and the idempotency layer remain
+  authoritative, and the lock never claims to be held when it is not.
+- **Release failure** → logged; the TTL is the backstop, so a crashed holder can
+  never deadlock the resource.
+- Every lock has a TTL (`DISTRIBUTED_LOCK_TTL_MS`, default 10s) that must
+  comfortably exceed the longest protected operation.
+
+Currently applied to **settlement creation** with the group-scoped key
+`lock:settlement:group:{groupId}`: concurrent settlements in the same group (one
+shared balance book) are serialized and made deterministic, while settlements in
+different groups never contend.
+
+## Edge Layer / Gateway
+
+The project deploys a plain Node/Express process (no reverse proxy or container
+orchestration exists in the repo), so the gateway is an **in-process
+application edge** installed before every other middleware (`src/edge/`). It:
+
+- Configures Express `trust proxy` from `TRUST_PROXY` so `req.ip` (and therefore
+  per-IP rate limiting) resolves through a reverse proxy only when an operator
+  declares one.
+- Screens every request **before** rate limiting and body parsing: rejects URLs
+  with control characters and absurdly long URLs, and rejects requests whose
+  declared `Content-Length` exceeds the 10 MB body limit ahead of time with
+  HTTP 413.
+- Normalizes the incoming `X-Request-Id` header using the same rule as the
+  request-ID middleware (`utils/requestId.ts` is the single source of truth):
+  well-formed IDs pass through, poorly formed IDs are dropped so the ID
+  middleware issues a fresh UUID — preserving the app's resilient
+  sanitize-and-fallback tracing contract while keeping malformed characters out
+  of logs.
+
+The edge layer contains no business logic and performs no I/O beyond reading
+headers. Rate limiting runs in the normal backend middleware graph (the gateway
+does not double-rate-limit). In a future deployment one can still front the app
+with an external load balancer / reverse proxy and set `TRUST_PROXY`
+accordingly; nothing about the edge layer conflicts with that.
 
 ## API Structure
 
@@ -1092,6 +1186,18 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 - Centralized rate limiting via `express-rate-limit` — per-IP limiter for all
   `/api/v1` endpoints plus a stricter tier for `/api/v1/auth/*`, with a 429 error
   envelope, `RateLimit-*`/`Retry-After` headers, and env-tunable windows/limits
+- **Redis infrastructure** (`src/redis/`) — lazy ioredis client with fail-fast
+  offline commands, non-fatal startup connect, and graceful shutdown
+- **Redis-backed distributed rate limiting** — fixed-window Lua store shared
+  across instances (fallback to process-local `MemoryStore`), separate
+  `rl:api:`/`rl:auth:` namespaces, `passOnStoreError` fail-open policy
+- **Distributed locking** (`src/redis/distributedLock.ts`) — `SET NX PX` + token
+  ownership, Lua release, TTL backstop, conflict → HTTP 409
+  `SETTLEMENT_CONCURRENT_LOCKED`, Redis outage → degraded uncoordinated run with
+  warning
+- **In-process edge/gateway layer** (`src/edge/`) — `TRUST_PROXY`-driven
+  `req.ip` resolution, URL/body-size/request-ID screening before rate limiting,
+  HTTP 413 handling for oversized bodies
 - Centralized configuration via Zod-validated environment variables
 - Health check endpoints (liveness + database readiness)
 - Centralized error handling (application errors, validation errors, 404)
@@ -1152,9 +1258,12 @@ The following features are **NOT implemented** in this chunk:
 - Idempotency protection for expense creation (only settlement creation is protected in this PR)
 - Member-removed activity events (the `ActivityType` enum does not yet include a removal type)
 - Notifications / real-time activity pushes (the feed is read on demand)
-- Distributed rate-limit store (current counters are in-memory and process-local;
-  a shared store such as `rate-limit-redis` would be needed for multi-instance
-  deployments behind a load balancer)
+- Redis high availability: the infra assumes a single Redis endpoint; no
+  Sentinel/Cluster topology or failover configuration is provided. Multi-instance
+  deployments share the same Redis, so a Redis outage is a single point of
+  failure for distributed enforcement (the app degrades, it does not crash).
+- Lock TTL caveat: if a protected operation outlives `DISTRIBUTED_LOCK_TTL_MS`,
+  two holders can overlap. Tune the TTL above the worst-case operation time.
 
 These will be built on top of this foundation in subsequent chunks.
 

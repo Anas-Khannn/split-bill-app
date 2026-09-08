@@ -14,6 +14,9 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
+  REDIS_URL: z.string().default("redis://localhost:6379"),
+  TRUST_PROXY: z.string().default("false"),
+  DISTRIBUTED_LOCK_TTL_MS: z.coerce.number().int().positive().default(10000),
 });
 
 export type Env = z.infer<typeof envSchema>;
