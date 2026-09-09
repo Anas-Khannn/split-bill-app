@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import { loadEnv } from "./config/env.js";
 import { createApp } from "./app.js";
 import { connectDatabase, disconnectDatabase } from "./db/prisma.js";
+import { connectRedis, disconnectRedis } from "./redis/redisClient.js";
 import { logger } from "./utils/logger.js";
 
 let server: Server | null = null;
@@ -12,6 +13,11 @@ async function start(): Promise<void> {
 
   await connectDatabase();
   logger.info("Connected to the database", { nodeEnv: env.NODE_ENV });
+
+  // Non-fatal: on failure Redis-dependent features degrade (rate limiting
+  // falls back to in-memory state, distributed locking is skipped) and the
+  // server keeps serving.
+  await connectRedis();
 
   const app = createApp();
 
@@ -27,6 +33,7 @@ function registerShutdownHandlers(): void {
     logger.info(`Received ${signal}, shutting down gracefully`);
     server?.close(async () => {
       await disconnectDatabase();
+      await disconnectRedis();
       process.exit(0);
     });
   };

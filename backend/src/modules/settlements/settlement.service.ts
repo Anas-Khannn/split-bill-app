@@ -1,8 +1,29 @@
 import { APP_ERRORS } from "../../constants/app-errors.js";
-import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors/app.error.js";
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "../../errors/app.error.js";
+import { loadEnv } from "../../config/env.js";
+import {
+  DistributedLock,
+  DistributedLockConflictError,
+} from "../../redis/distributedLock.js";
+import { getRedis } from "../../redis/redisClient.js";
 import type { IdempotencyContext } from "../idempotency/reconcile.js";
 import { SettlementRepository, type SettlementRecord } from "./settlement.repository.js";
 import { calculateBalances } from "./balance.util.js";
+
+/**
+ * Lock key convention for settlement creation. Group-scoped so concurrent
+ * settlements in the same group are serialized (they mutate one shared balance
+ * book), while settlements in different groups never contend. The prefix is
+ * part of the documented "lock:" keyspace.
+ */
+function settlementLockKey(groupId: string): string {
+  return `lock:settlement:group:${groupId}`;
+}
 
 export interface BalanceDto {
   userId: string;
@@ -33,7 +54,13 @@ export interface CreateSettlementInput {
 }
 
 export class SettlementService {
-  constructor(private repository: SettlementRepository) {}
+  constructor(
+    private repository: SettlementRepository,
+    private lock: Pick<DistributedLock, "withLock"> = new DistributedLock(
+      getRedis(),
+      loadEnv().DISTRIBUTED_LOCK_TTL_MS,
+    ),
+  ) {}
 
   async getGroupBalances(requesterId: string, groupId: string): Promise<BalanceDto[]> {
     const group = await this.repository.findGroupById(groupId);
@@ -100,24 +127,36 @@ export class SettlementService {
       );
     }
 
-const settlement = await this.repository.createSettlement(
-      {
-        groupId,
-        payerId: input.payerId,
-        payeeId: input.payeeId,
-        amountMinorUnits,
-        currencyCode: "PKR",
-        settledAt: new Date(),
-      },
-      idempotency,
-      {
-        userId: requesterId,
-        type: "SETTLEMENT_ADDED",
-        message: "recorded a settlement",
-      },
-    );
+    try {
+      const settlement = await this.lock.withLock(settlementLockKey(groupId), () =>
+        this.repository.createSettlement(
+          {
+            groupId,
+            payerId: input.payerId,
+            payeeId: input.payeeId,
+            amountMinorUnits,
+            currencyCode: "PKR",
+            settledAt: new Date(),
+          },
+          idempotency,
+          {
+            userId: requesterId,
+            type: "SETTLEMENT_ADDED",
+            message: "recorded a settlement",
+          },
+        ),
+      );
 
-    return this.toDto(settlement);
+      return this.toDto(settlement);
+    } catch (error) {
+      if (error instanceof DistributedLockConflictError) {
+        throw new ConflictError(
+          APP_ERRORS.SETTLEMENT_CONCURRENT_LOCKED,
+          "Another settlement for this group is being processed. Please retry shortly.",
+        );
+      }
+      throw error;
+    }
   }
 
   async getGroupSettlements(requesterId: string, groupId: string): Promise<SettlementDto[]> {
