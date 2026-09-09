@@ -160,13 +160,30 @@ backend/
 │   └── edge.test.ts              # Edge layer tests (trust proxy, URL/body/request-ID guard, 413)
 │   └── helpers/
 │       └── fakeRedis.ts          # In-memory + failing Redis fakes for tests
+│   └── integration/              # Integration suite (real PostgreSQL + Redis; see below)
+│       ├── config.ts             # INTEGRATION_DATABASE_URL / INTEGRATION_REDIS_URL resolution
+│       ├── setup.ts              # Env bootstrap, infrastructure verify, migration apply, per-test cleanup
+│       ├── auth.persistence.test.ts
+│       ├── transactions.test.ts
+│       ├── groups.persistence.test.ts
+│       ├── expenses.persistence.test.ts
+│       ├── settlements.persistence.test.ts
+│       ├── cache.redis.test.ts
+│       ├── redis.infra.test.ts
+│       ├── jobs.redis.test.ts
+│       ├── http.api.test.ts
+│       └── helpers/              # database.ts, redis.ts, http.ts, fixtures.ts, waitFor.ts
+├── scripts/
+│   └── migrate-integration-db.ts # Migrate/reset the integration database (never the dev DB)
+├── docker-compose.yml        # `postgres-integration` (localhost:5433) + `redis-integration` (localhost:6380)
 ├── .env.example
 ├── .gitignore
 ├── eslint.config.js
 ├── prettier.config.js
 ├── package.json
 ├── tsconfig.json
-├── vitest.config.ts
+├── vitest.config.ts          # Unit suite (`npm test`)
+├── vitest.integration.config.ts # Integration suite (`npm run test:integration`)
 └── README.md
 ```
 
@@ -203,6 +220,8 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 | `AUTH_RATE_LIMIT_MAX` | No | `20` | Max requests per client IP per window for `/api/v1/auth/*` |
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string for distributed rate limiting/locking. Never commit one containing a password. |
 | `TRUST_PROXY` | No | `false` | Reverse-proxy trust level for `req.ip`. Use `true`/`1` (first hop), a hop count, or an Express value (`loopback`, subnet, ...). Leave `false` when no proxy is deployed. |
+| `INTEGRATION_DATABASE_URL` | No | `postgresql://splitease:splitease_test@localhost:5433/splitease_integration` | PostgreSQL connection string used by the integration test suite (see [Integration Testing](#integration-testing-real-postgresql--redis)). |
+| `INTEGRATION_REDIS_URL` | No | `redis://localhost:6380/15` | Redis connection string used by the integration test suite (db index 15). |
 | `DISTRIBUTED_LOCK_TTL_MS` | No | `10000` | TTL of distributed locks in milliseconds. Must exceed the longest protected operation. |
 | `JOB_QUEUE_MAX_ATTEMPTS` | No | `5` | Retry budget for background jobs before they are discarded. |
 | `JOB_QUEUE_BASE_BACKOFF_MS` | No | `2000` | First-retry delay for a failed background job (exponential). |
@@ -257,7 +276,128 @@ npm run db:migrate       # Apply pending migrations (production/deploy)
 npm run db:migrate:dev   # Create/apply migrations (development)
 npm run db:studio        # Open Prisma Studio (GUI for data inspection)
 npm run db:validate      # Validate the Prisma schema
+npm run integration:up   # Start the integration PostgreSQL + Redis containers (docker compose)
+npm run integration:down # Stop and remove the integration containers
+npm run test:infra:up    # Docker-free fallback: start an isolated local PostgreSQL + portable Redis
+npm run test:infra:down  # Stop the local fallback services started by test:infra:up
+npm run test:infra:status # Report whether the integration services are up
+npm run db:migrate:test  # Apply pending migrations to the integration database (INTEGRATION_DATABASE_URL)
+npm run db:reset:test    # Reset (drop + migrate) the integration database
+npm run test:integration # Run the integration suite (real PostgreSQL + Redis; requires integration:up or test:infra:up first)
+npm run test:integration:watch # Run the integration suite in watch mode
+npm run test:all         # Run both the unit and the integration suites
 ```
+
+The `npm test` (unit) suite runs without any external services; the
+`test:integration` suite runs against real PostgreSQL + Redis started with
+either `npm run integration:up` (Docker) or `npm run test:infra:up` (local,
+Docker-free fallback) first — see
+[Integration Testing](#integration-testing-real-postgresql--redis).
+
+## Integration Testing (real PostgreSQL + Redis)
+
+Alongside the mocked unit suite (`npm test`), the backend ships an **integration
+suite** that runs against live PostgreSQL and Redis via Docker Compose. It is
+deliberately isolated from your development database.
+
+### Principles
+
+- **Real infrastructure, no fakes.** Redis primitives (rate limiting, the
+  distributed lock, the cache, the job queue), transactional atomicity, unique
+  constraints, and end-to-end HTTP flows are exercised against the actual
+  containers — nothing is mocked.
+- **No arbitrary sleeps.** Concurrency and TTL behavior are asserted with a
+  bounded polling helper (`tests/integration/helpers/waitFor.ts`) or by reading
+  raw Redis scores/`PTTL`s back, never with fixed `setTimeout` waits.
+- **Schema is always current.** The setup checks the integration database's
+  migration state and applies pending migrations before the first test runs, so
+  a fresh checkout just works; a dev-created schema can never be wedged.
+- **Deterministic isolation.** Every test starts against a truncated database
+  (all tables, `TRUNCATE ... CASCADE`) and an empty Redis keyspace (`FLUSHDB`).
+- **Never touches dev data.** The suite uses dedicated PostgreSQL (host port
+  `5433`) and Redis (port `6380`, db index `15`) services and its own connection
+  strings. Migration/reset helpers all target `INTEGRATION_DATABASE_URL`.
+
+### Running the suite
+
+```bash
+cd backend
+
+# Option A — Docker (works when Docker can run):
+npm run integration:up     # start postgres-integration + redis-integration (docker compose)
+npm run test:integration   # run the full integration suite
+npm run integration:down   # stop the containers when you are done
+
+# Option B — Docker-free fallback (no Docker/admin needed), e.g. on Windows:
+npm run test:infra:up      # init/start an ISOLATED local PostgreSQL (host port 5433)
+                           # and download+start a portable Redis (port 6380, db 15)
+npm run test:integration   # run the full integration suite
+npm run test:infra:down    # stop those services when you are done
+```
+
+Details:
+
+- **Docker**: `docker compose -f docker-compose.yml up -d --wait` starts
+  **PostgreSQL on localhost:5433** (`splitease_integration` database, user
+  `splitease` / password `splitease_test`, overridable via environment) and
+  **Redis on localhost:6380** (no persistence, so test data never survives a
+  restart). Both get healthchecks; `--wait` blocks until they are ready.
+- **Local fallback** (`npm run test:infra:up`, implemented by
+  `scripts/test-infra.ts`): locates PostgreSQL binaries (system install,
+  `POSTGRES_BIN_DIR`, or PATH), `initdb`s a dedicated data directory under
+  `backend/.test-infra/pgdata` on first run, and starts the server on
+  localhost:5433 bound to 127.0.0.1. On Windows it also lowers
+  `shared_buffers`/`max_connections` because the default 128 MB segment
+  regularly fails with the ASLR "error code 487" shared-memory reservation bug.
+  Redis is either discovered on PATH/`REDIS_SERVER_BIN` or auto-downloaded as
+  a sha256-pinned portable Windows build into `backend/.test-infra/redis`.
+  Everything is git-ignored; an already-running matching service is reused
+  (never a dev database).
+- `npm run test:integration` runs `vitest run -c vitest.integration.config.ts`.
+  The setup file (`tests/integration/setup.ts`) connects both services, applies
+  pending migrations through `scripts/migrate-integration-db.ts` (schema is
+  verified first with a single Prisma query), then truncates/flushes per test.
+- Utilities:
+  - `npm run db:migrate:test` — apply pending migrations to the integration DB.
+  - `npm run db:reset:test` — drop and re-create the integration DB schema.
+  - `npm run integration:down` — stop/remove the compose services.
+  - `npm run test:infra:status` — show whether the local services are up.
+  - `npm run test:all` — run the unit suite first, then the integration suite.
+
+### What it covers
+
+- **Persistence & constraints** (`transactions.test.ts`): atomic create/rollback,
+  unhandled `P2002`/`P2003` rejection, the owner-delete FK restriction, and
+  unique constraints (duplicate email, duplicate membership).
+- **Domain persistence against the real DB** (`auth.persistence.test.ts`,
+  `groups.persistence.test.ts`, `expenses.persistence.test.ts`,
+  `settlements.persistence.test.ts`): hashed credentials and refresh-token
+  rotation, membership/ownership rules, EQUAL/EXACT split correctness, BIGINT
+  minor-unit round-trips, and settlement idempotency (sequential replay, request
+  hash changes, cross-user key reuse, concurrent same-key creation, expired
+  record reuse) with balance reconciliation.
+- **Redis infra** (`redis.infra.test.ts`): the `RedisRateLimitStore` Lua counter
+  with self-expiring windows, `DistributedLock` NX acquire / token-safe release /
+  TTL backstop, `RedisCacheStore` TTL round-trip, and `JobQueue` claim/complete/
+  discard, future scheduling, backoff re-scoring, and malformed-payload cleanup.
+- **Caching** (`cache.redis.test.ts`): populate-on-miss, hit serving, rename
+  invalidation, corrupt-entry recovery, and self-healing on ghost entries.
+- **Background jobs** (`jobs.redis.test.ts`): `GroupSummary` recomputation from
+  authoritative tables, idempotent re-delivery, permanent-failure discard for
+  deleted groups, invalid-payload discard, and backoff scheduling.
+- **HTTP end-to-end** (`http.api.test.ts`): `/health`, `/health/ready`, the full
+  auth flow (register → me → refresh rotation → replay rejection → verify-email),
+  group/member/expense lifecycles, and idempotent settlement creation with the
+  `Idempotency-Key` header and balance reads.
+
+### Configuration
+
+Override the connection strings without touching compose settings:
+
+| Variable | Default |
+|---|---|
+| `INTEGRATION_DATABASE_URL` | `postgresql://splitease:splitease_test@localhost:5433/splitease_integration` |
+| `INTEGRATION_REDIS_URL` | `redis://localhost:6380/15` |
 
 ## Health Endpoints
 
