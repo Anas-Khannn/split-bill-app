@@ -5,16 +5,23 @@ interface FakeRedisEntry {
   expiresAt: number | null;
 }
 
+interface FakeZSetMember {
+  member: string;
+  score: number;
+}
+
 /**
  * A self-contained in-memory implementation of the narrow {@link RedisLike}
- * contract, including the two Lua scripts used in production (the rate-limit
- * INCR/PEXPIRE/PTTL counter and the lock's ownership-safe GET/DEL release).
- * It honours PX TTLs so window-expiry and lock-expiry behavior can be tested
- * without a live Redis server.
+ * contract, including the Lua scripts used in production (the rate-limit
+ * INCR/PEXPIRE/PTTL counter, the lock's ownership-safe GET/DEL release, and the
+ * job queue's claim-by-score ZRANGEBYSCORE). It honours PX TTLs so
+ * window-expiry and lock-expiry behavior can be tested without a live Redis
+ * server.
  */
 export class FakeRedis implements RedisLike {
   readonly status = "ready";
   readonly store = new Map<string, FakeRedisEntry>();
+  readonly zsets = new Map<string, FakeZSetMember[]>();
 
   private now(): number {
     return Date.now();
@@ -32,10 +39,12 @@ export class FakeRedis implements RedisLike {
     value: string,
     mode: "PX",
     ttlMs: number,
-    guard: "NX",
+    guard?: "NX" | "XX",
   ): Promise<"OK" | null> {
     this.evictExpired(key);
-    if (guard === "NX" && this.store.has(key)) return null;
+    const exists = this.store.has(key);
+    if (guard === "NX" && exists) return null;
+    if (guard === "XX" && !exists) return null;
     this.store.set(key, {
       value,
       expiresAt: mode === "PX" ? this.now() + ttlMs : null,
@@ -69,6 +78,33 @@ export class FakeRedis implements RedisLike {
     return "PONG";
   }
 
+  async zadd(key: string, score: number, member: string): Promise<number> {
+    const members = this.zsets.get(key) ?? [];
+    const existing = members.find((item) => item.member === member);
+    if (existing) {
+      existing.score = score;
+      this.zsets.set(key, members);
+      return 0;
+    }
+    members.push({ member, score });
+    this.zsets.set(key, members);
+    return 1;
+  }
+
+  async zrem(key: string, member: string): Promise<number> {
+    const members = this.zsets.get(key);
+    if (!members) return 0;
+    const before = members.length;
+    const next = members.filter((item) => item.member !== member);
+    if (next.length === before) return 0;
+    if (next.length === 0) {
+      this.zsets.delete(key);
+    } else {
+      this.zsets.set(key, next);
+    }
+    return 1;
+  }
+
   async eval(
     script: string,
     numKeys: number,
@@ -84,6 +120,18 @@ export class FakeRedis implements RedisLike {
         hits === 1 ? this.now() + windowMs : (previous?.expiresAt ?? this.now() + windowMs);
       this.store.set(key, { value: `${hits}`, expiresAt });
       return [hits, Math.max(0, expiresAt - this.now())];
+    }
+
+    if (script.includes("ZRANGEBYSCORE")) {
+      // Job queue claim: returns the id of the earliest job whose next-attempt
+      // score is due (<= now). The member stays in the set; the in-flight lease
+      // is what prevents duplicate consumption.
+      const now = Number(args[numKeys]);
+      const members = this.zsets.get(key) ?? [];
+      const due = members
+        .filter((item) => item.score <= now)
+        .sort((a, b) => a.score - b.score)[0];
+      return due ? due.member : null;
     }
 
     // Ownership-safe release: only the holder may remove the key.
@@ -127,6 +175,14 @@ export class FailingRedis implements RedisLike {
   }
 
   decr(): Promise<number> {
+    return this.fail();
+  }
+
+  zadd(): Promise<number> {
+    return this.fail();
+  }
+
+  zrem(): Promise<number> {
     return this.fail();
   }
 

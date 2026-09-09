@@ -33,6 +33,7 @@ import {
 import { requireIdempotencyKey } from "../idempotency/validate.js";
 import { activityGroupParamsSchema, activityQuerySchema } from "../activity/validators.js";
 import { getGroupActivity } from "../activity/activity.controller.js";
+import summaryRoutes from "../summary/summary.routes.js";
 
 const router = Router();
 
@@ -116,5 +117,7 @@ router.get(
   validate({ params: activityGroupParamsSchema, query: activityQuerySchema }),
   asyncHandler(getGroupActivity),
 );
+
+router.use("/:id/summary", summaryRoutes);
 
 export default router;
