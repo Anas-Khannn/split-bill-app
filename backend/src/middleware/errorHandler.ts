@@ -17,7 +17,11 @@ function formatZodError(error: ZodError): ErrorResponse {
   };
 }
 
-export function errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
+export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
+  if (req.requestId) {
+    res.setHeader("X-Request-Id", req.requestId);
+  }
+
   if (err instanceof ZodError) {
     res.status(HTTP_STATUSES.BAD_REQUEST).json(formatZodError(err));
     return;
@@ -44,7 +48,11 @@ export function errorHandler(err: Error, _req: Request, res: Response, _next: Ne
     return;
   }
 
-  logger.error("Unhandled error", { error: err.message, stack: err.stack });
+  logger.error("Unhandled error", {
+    requestId: req.requestId,
+    error: err.message,
+    stack: err.stack,
+  });
 
   res.status(HTTP_STATUSES.INTERNAL_SERVER_ERROR).json({
     success: false,
@@ -52,7 +60,11 @@ export function errorHandler(err: Error, _req: Request, res: Response, _next: Ne
   } satisfies ErrorResponse);
 }
 
-export function notFoundHandler(_req: Request, res: Response): void {
+export function notFoundHandler(req: Request, res: Response): void {
+  if (req.requestId) {
+    res.setHeader("X-Request-Id", req.requestId);
+  }
+
   res.status(HTTP_STATUSES.NOT_FOUND).json({
     success: false,
     message: "Endpoint not found.",
