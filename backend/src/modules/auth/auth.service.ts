@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { getEnv } from "../../config/env.js";
 import { APP_ERRORS } from "../../constants/app-errors.js";
 import { ConflictError, NotFoundError, UnauthorizedError } from "../../errors/app.error.js";
+import { METRIC, metrics } from "../../metrics/registry.js";
 import { AuthRepository, type AuthUser } from "./auth.repository.js";
 import { generateRefreshToken, hashRefreshToken } from "./refresh-token.util.js";
 
@@ -41,6 +42,8 @@ export class AuthService {
       passwordHash,
     });
     const refreshToken = await this.issueRefreshToken(user.id);
+
+    metrics.increment(METRIC.usersRegisteredTotal);
 
     return { user, token: this.signToken(user), refreshToken };
   }

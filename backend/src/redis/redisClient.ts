@@ -1,6 +1,7 @@
 import { Redis } from "ioredis";
 
 import { loadEnv } from "../config/env.js";
+import { METRIC, metrics } from "../metrics/registry.js";
 import { logger } from "../utils/logger.js";
 
 /**
@@ -83,6 +84,7 @@ export function getRedisClient(): Redis {
 
     _client.on("error", (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
+      metrics.increment(METRIC.redisConnectionErrorsTotal);
       logger.error("Redis connection error", { error: message });
     });
     _client.on("ready", () => {

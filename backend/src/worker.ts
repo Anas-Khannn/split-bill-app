@@ -3,6 +3,7 @@ import { connectDatabase, disconnectDatabase } from "./db/prisma.js";
 import { getJobQueue } from "./queues/jobQueue.js";
 import { WorkerRunner } from "./queues/workerRunner.js";
 import { connectRedis, disconnectRedis } from "./redis/redisClient.js";
+import { startMetricsServer, stopMetricsServer } from "./metrics/metricsEndpoint.js";
 import { logger } from "./utils/logger.js";
 
 let runner: WorkerRunner | null = null;
@@ -25,6 +26,11 @@ async function start(): Promise<void> {
     pollIntervalMs: env.JOB_QUEUE_POLL_INTERVAL_MS,
   });
 
+  if (env.METRICS_ENABLED === "true" && env.METRICS_PORT) {
+    startMetricsServer(env.METRICS_PORT);
+    logger.info("Metrics endpoint listening", { port: env.METRICS_PORT });
+  }
+
   registerShutdownHandlers();
 
   // Runs forever; only returns once `stop()` is called by a signal handler.
@@ -36,6 +42,7 @@ function registerShutdownHandlers(): void {
     logger.info(`Received ${signal}, shutting down gracefully`);
     void (async () => {
       if (runner) await runner.stop();
+      await stopMetricsServer();
       await disconnectDatabase();
       await disconnectRedis();
       process.exit(0);

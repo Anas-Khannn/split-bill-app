@@ -1,5 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
+import { METRIC, metrics } from "../metrics/registry.js";
+
 // A single shared PrismaClient instance is reused across the whole
 // application instead of creating one per request or per repository. This
 // avoids exhausting the connection pool during development and in production.
@@ -22,8 +24,13 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export async function connectDatabase(): Promise<void> {
-  await prisma.$connect();
-  await prisma.$queryRaw`SELECT 1`;
+  try {
+    await prisma.$connect();
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (error) {
+    metrics.increment(METRIC.databaseConnectionErrorsTotal);
+    throw error;
+  }
 }
 
 export async function disconnectDatabase(): Promise<void> {

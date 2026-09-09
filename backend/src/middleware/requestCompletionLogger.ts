@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { resolveRouteTemplate } from "../metrics/route.js";
 import { logger } from "../utils/logger.js";
 
 /**
@@ -17,6 +18,7 @@ export function requestCompletionLogger(req: Request, res: Response, next: NextF
       requestId: req.requestId,
       method: req.method,
       path: req.originalUrl,
+      route: resolveRouteTemplate(req),
       statusCode: res.statusCode,
       durationMs,
     });

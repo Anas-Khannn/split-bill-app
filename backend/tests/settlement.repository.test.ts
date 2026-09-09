@@ -95,7 +95,7 @@ function makeTx() {
       findUnique: vi.fn(),
     },
     activityEvent: {
-      create: vi.fn(),
+      create: vi.fn().mockResolvedValue({ id: "event-1" }),
     },
   };
 }

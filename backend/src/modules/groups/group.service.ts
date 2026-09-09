@@ -1,10 +1,12 @@
 import { APP_ERRORS } from "../../constants/app-errors.js";
 import { ConflictError, ForbiddenError, NotFoundError } from "../../errors/app.error.js";
+import { METRIC, metrics } from "../../metrics/registry.js";
 import {
   GroupRepository,
   type GroupWithMemberCount,
   type GroupWithMembers,
 } from "./group.repository.js";
+import { GroupCache } from "./group.cache.js";
 
 type GroupResult = {
   id: string;
@@ -15,7 +17,10 @@ type GroupResult = {
 };
 
 export class GroupService {
-  constructor(private repository: GroupRepository) {}
+  constructor(
+    private repository: GroupRepository,
+    private cache: GroupCache = new GroupCache(),
+  ) {}
 
   async createGroup(userId: string, data: { name: string }): Promise<GroupResult> {
     const group = await this.repository.createGroupWithOwner(userId, data, {
@@ -23,6 +28,8 @@ export class GroupService {
       type: "GROUP_CREATED",
       message: "created the group",
     });
+
+    metrics.increment(METRIC.groupsCreatedTotal);
 
     return {
       id: group.id,
@@ -38,6 +45,18 @@ export class GroupService {
   }
 
   async getGroupById(userId: string, groupId: string): Promise<GroupWithMembers> {
+    const cached = await this.cache.getCachedGroupById(groupId);
+    if (cached) {
+      const isMember = await this.repository.isGroupMember(groupId, userId);
+      if (!isMember) {
+        throw new ForbiddenError(
+          APP_ERRORS.NOT_GROUP_MEMBER,
+          "You are not a member of this group.",
+        );
+      }
+      return cached;
+    }
+
     const group = await this.repository.findGroupByIdWithMembers(groupId);
     if (!group) {
       throw new NotFoundError(APP_ERRORS.GROUP_NOT_FOUND, "Group not found.");
@@ -47,6 +66,11 @@ export class GroupService {
     if (!isMember) {
       throw new ForbiddenError(APP_ERRORS.NOT_GROUP_MEMBER, "You are not a member of this group.");
     }
+
+    // Populate the cache only for an authorized read: the entry is group-scoped
+    // and the membership check above is what keeps cache hits safe for future
+    // readers.
+    await this.cache.setCachedGroupById(groupId, group);
 
     return group;
   }
@@ -68,6 +92,8 @@ export class GroupService {
     if (!updated) {
       throw new NotFoundError(APP_ERRORS.GROUP_NOT_FOUND, "Group not found.");
     }
+
+    await this.cache.invalidateGroupCache(groupId);
 
     return {
       id: updated.id,
@@ -92,6 +118,7 @@ export class GroupService {
     }
 
     await this.repository.deleteGroup(groupId);
+    await this.cache.invalidateGroupCache(groupId);
   }
 
   async addGroupMember(
@@ -127,6 +154,8 @@ export class GroupService {
       message: `added ${targetUser.name} to the group`,
     });
 
+    await this.cache.invalidateGroupCache(groupId);
+
     return {
       id: member.id,
       groupId: member.groupId,
@@ -161,5 +190,6 @@ export class GroupService {
     }
 
     await this.repository.removeGroupMember(groupId, memberId);
+    await this.cache.invalidateGroupCache(groupId);
   }
 }

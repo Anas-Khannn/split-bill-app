@@ -1,5 +1,6 @@
 import { beforeEach } from "vitest";
 import { resetEnv } from "../src/config/env.js";
+import { resetMetrics } from "../src/metrics/registry.js";
 import { setSilent } from "../src/utils/logger.js";
 
 process.env.NODE_ENV = "test";
@@ -10,5 +11,6 @@ process.env.JWT_EXPIRES_IN = "1h";
 
 beforeEach(() => {
   resetEnv();
+  resetMetrics();
   setSilent(true);
 });
