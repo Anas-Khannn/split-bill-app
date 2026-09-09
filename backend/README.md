@@ -399,6 +399,80 @@ Override the connection strings without touching compose settings:
 | `INTEGRATION_DATABASE_URL` | `postgresql://splitease:splitease_test@localhost:5433/splitease_integration` |
 | `INTEGRATION_REDIS_URL` | `redis://localhost:6380/15` |
 
+## Continuous Integration (GitHub Actions)
+
+A single workflow (`.github/workflows/ci.yaml`, at the repository root) validates
+the backend. It runs on **every pull request** that touches backend or CI files
+and on **every push to `master`**. It only *validates* — it never deploys, and
+it never connects to a development or production database or Redis.
+
+### What CI runs
+
+CI uses **Node.js 22** (the declared minimum is `>= 18`) and executes the exact
+scripts developers use locally:
+
+| Step | Command |
+|---|---|
+| Dependency install (deterministic) | `npm ci` |
+| Prisma client generation | `npm run db:generate` |
+| Prisma schema validation | `npm run db:validate` |
+| Lint | `npm run lint` |
+| Type check | `npm run typecheck` |
+| Unit suite (no external services) | `npm test` |
+| Security audit (production tree) | `node .github/scripts/security-audit.mjs` |
+| Integration suite (PostgreSQL + Redis) | `npm run test:integration` |
+| Production build | `npm run build` |
+
+The unit suite needs nothing external. The **integration suite** runs against
+ephemeral, disposable containers started by the workflow itself:
+`postgres:16-alpine` on `localhost:5433` and `redis:7-alpine` on
+`localhost:6380` (db index 15) — the same images, ports, and throwaway
+credentials used by `backend/docker-compose.yml`. The suite connects through
+`INTEGRATION_DATABASE_URL` / `INTEGRATION_REDIS_URL` and applies migrations
+itself, so CI never shares data with developers or production.
+
+### Security audit policy
+
+CI gates on `npm audit` findings in the **production** dependency tree
+(`--omit=dev`): any HIGH or CRITICAL advisory that is not explicitly
+allowlisted fails the build. Dev-only toolchains (Vitest/Vite/esbuild) are
+excluded by `--omit=dev`. The Prisma CLI chain shipped inside the production
+`@prisma/client` dependency (`prisma` / `@prisma/config` / `deepmerge-ts`) is
+allowlisted because that CLI is never executed at runtime and fixing it needs a
+breaking Prisma upgrade — see `.github/scripts/security-audit.mjs` for the
+current allowlist and reasons. Run the same check locally:
+
+```bash
+cd backend
+node ../.github/scripts/security-audit.mjs
+```
+
+### Reproducing CI locally
+
+```bash
+cd backend
+npm ci
+npm run db:generate
+npm run db:validate
+npm run lint
+npm run typecheck
+npm test
+npm run test:integration   # first run `npm run integration:up` or `npm run test:infra:up`
+npm run build
+```
+
+If the integration suite fails, check that nothing else is bound to ports
+**5433/6380**, start the services with either `npm run integration:up` (Docker)
+or `npm run test:infra:up` (Docker-free fallback), and re-run
+`npm run test:integration` — the suite stops with a setup hint when PostgreSQL
+or Redis is unreachable (see
+[Integration Testing](#integration-testing-real-postgresql--redis)).
+
+> **Known limitation:** the repository is not yet Prettier-compliant
+> (`npm run format:check` reports issues across the tree), so CI enforces
+> ESLint only. Formatting is a candidate for a follow-up change; CI does not
+> claim to check it.
+
 ## Health Endpoints
 
 ```

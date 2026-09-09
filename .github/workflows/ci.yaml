@@ -1,0 +1,106 @@
+name: Backend CI
+
+# CI for the backend only. Runs on pull requests and pushes to master whenever
+# backend code or CI configuration changes. The workflow validates the backend
+# but never deploys anything and never touches a development/production
+# database or Redis instance.
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/**"
+  push:
+    branches:
+      - master
+    paths:
+      - "backend/**"
+      - ".github/**"
+
+permissions:
+  contents: read
+
+# Cancel an in-flight run when a newer commit arrives on the same branch/PR so
+# runners are never wasted on outdated validation.
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_ENV: test
+  # Points the Prisma CLI (generate/validate) at the CI integration database.
+  # Throwaway CI-only credentials, identical to the docker-compose.yml defaults.
+  DATABASE_URL: postgresql://splitease:splitease_test@localhost:5433/splitease_integration
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  ci:
+    name: Backend CI (Node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: splitease_integration
+          POSTGRES_USER: splitease
+          POSTGRES_PASSWORD: splitease_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U splitease -d splitease_integration"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Validate Prisma schema
+        run: npm run db:validate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: TypeScript type check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Security audit (production dependencies)
+        run: node ../.github/scripts/security-audit.mjs
+
+      - name: Integration tests (PostgreSQL + Redis)
+        run: npm run test:integration
+        env:
+          INTEGRATION_DATABASE_URL: postgresql://splitease:splitease_test@localhost:5433/splitease_integration
+          INTEGRATION_REDIS_URL: redis://localhost:6380/15
+
+      - name: Production build
+        run: npm run build
