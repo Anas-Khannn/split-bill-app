@@ -690,7 +690,11 @@ describe("Authentication API", () => {
       expect(res.body.data.user.name).toBe("New Name");
       expect(res.body.data.user.email).toBe("new@example.com");
       expect(res.body.data.user.passwordHash).toBeUndefined();
-      expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: { name: "New Name", email: "new@example.com" } }));
+      expect(mockUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { name: "New Name", email: "new@example.com", emailVerifiedAt: null },
+        }),
+      );
     });
 
     it("should return 409 when the email belongs to another account", async () => {

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { idSchema } from "../../utils/idSchema.js";
+
 const safeAmount = z
   .number()
   .int("Amount must be a whole number of minor units")
@@ -12,7 +14,7 @@ const safeAmount = z
  * expense). Kept local to this module so it stays self-contained.
  */
 export const expenseTargetParamsSchema = z.object({
-  id: z.string().min(1, "ID is required"),
+  id: idSchema,
 });
 
 export const createExpenseBodySchema = z
@@ -23,12 +25,12 @@ export const createExpenseBodySchema = z
       .min(1, "Description is required")
       .max(280, "Description is too long"),
     amountMinorUnits: safeAmount,
-    payerId: z.string().min(1, "Payer ID is required"),
+    payerId: idSchema,
     splitType: z.enum(["EQUAL", "EXACT"]),
     participants: z
       .array(
         z.object({
-          userId: z.string().min(1, "Participant user ID is required"),
+          userId: idSchema,
           amountMinorUnits: safeAmount.optional(),
         }),
       )
@@ -38,11 +40,11 @@ export const createExpenseBodySchema = z
   .strict();
 
 export const expenseParamsSchema = z.object({
-  id: z.string().min(1, "Expense ID is required"),
+  id: idSchema,
 });
 
 const expenseParticipantSchema = z.object({
-  userId: z.string().min(1, "Participant user ID is required"),
+  userId: idSchema,
   amountMinorUnits: safeAmount.optional(),
 });
 
@@ -55,7 +57,7 @@ export const updateExpenseBodySchema = z
       .max(280, "Description is too long")
       .optional(),
     amountMinorUnits: safeAmount.optional(),
-    payerId: z.string().min(1, "Payer ID is required").optional(),
+    payerId: idSchema.optional(),
     splitType: z.enum(["EQUAL", "EXACT"]).optional(),
     participants: z.array(expenseParticipantSchema).min(1, "At least one participant is required").optional(),
     expenseDate: z.string().datetime({ offset: true }).optional(),

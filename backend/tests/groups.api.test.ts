@@ -38,12 +38,12 @@ import { prisma } from "../src/db/prisma.js";
 
 const mockPrisma = vi.mocked(prisma);
 
-const ownerId = "owner-1";
-const memberId = "member-1";
-const outsiderId = "outsider-1";
+const ownerId = "55555555-5555-4555-8555-555555555555";
+const memberId = "66666666-6666-4666-8666-666666666666";
+const outsiderId = "88888888-8888-4888-8888-888888888888";
 
 const group = {
-  id: "group-1",
+  id: "11111111-1111-4111-8111-111111111111",
   name: "Trip to Naran",
   createdById: ownerId,
   createdAt: new Date(),
@@ -94,7 +94,7 @@ describe("Groups API", () => {
 
       expect(res.status).toBe(HTTP_STATUSES.CREATED);
       expect(res.body.success).toBe(true);
-      expect(res.body.data.group.id).toBe("group-1");
+      expect(res.body.data.group.id).toBe("11111111-1111-4111-8111-111111111111");
       expect(res.body.data.group.createdById).toBe(ownerId);
     });
 
@@ -172,7 +172,7 @@ describe("Groups API", () => {
       mockPrisma.groupMember.findUnique.mockResolvedValue(groupMember);
 
       const res = await request(app)
-        .get("/api/v1/groups/group-1")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.OK);
@@ -181,7 +181,7 @@ describe("Groups API", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).get("/api/v1/groups/group-1");
+      const res = await request(app).get("/api/v1/groups/11111111-1111-4111-8111-111111111111");
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
     });
@@ -198,7 +198,7 @@ describe("Groups API", () => {
       mockPrisma.groupMember.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
-        .get("/api/v1/groups/group-1")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111")
         .set("Authorization", `Bearer ${signToken(outsiderId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.FORBIDDEN);
@@ -208,7 +208,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(null);
 
       const res = await request(app)
-        .get("/api/v1/groups/missing")
+        .get("/api/v1/groups/00000000-0000-4000-8000-000000000099")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NOT_FOUND);
@@ -229,7 +229,7 @@ describe("Groups API", () => {
       });
 
       const res = await request(app)
-        .put("/api/v1/groups/group-1")
+        .put("/api/v1/groups/11111111-1111-4111-8111-111111111111")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ name: "Updated Name" });
 
@@ -240,7 +240,7 @@ describe("Groups API", () => {
 
     it("should return 400 when validation fails", async () => {
       const res = await request(app)
-        .put("/api/v1/groups/group-1")
+        .put("/api/v1/groups/11111111-1111-4111-8111-111111111111")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ name: "" });
 
@@ -248,7 +248,7 @@ describe("Groups API", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).put("/api/v1/groups/group-1").send({ name: "Updated" });
+      const res = await request(app).put("/api/v1/groups/11111111-1111-4111-8111-111111111111").send({ name: "Updated" });
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
     });
@@ -257,7 +257,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(group);
 
       const res = await request(app)
-        .put("/api/v1/groups/group-1")
+        .put("/api/v1/groups/11111111-1111-4111-8111-111111111111")
         .set("Authorization", `Bearer ${signToken(memberId)}`)
         .send({ name: "Updated Name" });
 
@@ -268,7 +268,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(null);
 
       const res = await request(app)
-        .put("/api/v1/groups/missing")
+        .put("/api/v1/groups/00000000-0000-4000-8000-000000000099")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ name: "Updated Name" });
 
@@ -282,7 +282,7 @@ describe("Groups API", () => {
       mockPrisma.group.delete.mockResolvedValue(group);
 
       const res = await request(app)
-        .delete("/api/v1/groups/group-1")
+        .delete("/api/v1/groups/11111111-1111-4111-8111-111111111111")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NO_CONTENT);
@@ -290,7 +290,7 @@ describe("Groups API", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).delete("/api/v1/groups/group-1");
+      const res = await request(app).delete("/api/v1/groups/11111111-1111-4111-8111-111111111111");
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
     });
@@ -299,7 +299,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(group);
 
       const res = await request(app)
-        .delete("/api/v1/groups/group-1")
+        .delete("/api/v1/groups/11111111-1111-4111-8111-111111111111")
         .set("Authorization", `Bearer ${signToken(memberId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.FORBIDDEN);
@@ -309,7 +309,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(null);
 
       const res = await request(app)
-        .delete("/api/v1/groups/missing")
+        .delete("/api/v1/groups/00000000-0000-4000-8000-000000000099")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NOT_FOUND);
@@ -336,7 +336,7 @@ describe("Groups API", () => {
       });
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/members")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/members")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ userId: memberId });
 
@@ -347,7 +347,7 @@ describe("Groups API", () => {
 
     it("should return 401 without authentication", async () => {
       const res = await request(app)
-        .post("/api/v1/groups/group-1/members")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/members")
         .send({ userId: memberId });
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
@@ -357,7 +357,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(group);
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/members")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/members")
         .set("Authorization", `Bearer ${signToken(memberId)}`)
         .send({ userId: memberId });
 
@@ -368,7 +368,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(null);
 
       const res = await request(app)
-        .post("/api/v1/groups/missing/members")
+        .post("/api/v1/groups/00000000-0000-4000-8000-000000000099/members")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ userId: memberId });
 
@@ -382,9 +382,9 @@ describe("Groups API", () => {
       mockPrisma.user.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/members")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/members")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
-        .send({ userId: "ghost" });
+        .send({ userId: "00000000-0000-4000-8000-000000000098" });
 
       expect(res.status).toBe(HTTP_STATUSES.NOT_FOUND);
     });
@@ -401,7 +401,7 @@ describe("Groups API", () => {
       mockPrisma.groupMember.findUnique.mockResolvedValue(groupMember);
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/members")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/members")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ userId: memberId });
 
@@ -429,7 +429,7 @@ describe("Groups API", () => {
       });
 
       const res = await request(app)
-        .delete(`/api/v1/groups/group-1/members/${memberId}`)
+        .delete(`/api/v1/groups/11111111-1111-4111-8111-111111111111/members/${memberId}`)
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NO_CONTENT);
@@ -437,7 +437,7 @@ describe("Groups API", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).delete(`/api/v1/groups/group-1/members/${memberId}`);
+      const res = await request(app).delete(`/api/v1/groups/11111111-1111-4111-8111-111111111111/members/${memberId}`);
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
     });
@@ -446,7 +446,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(group);
 
       const res = await request(app)
-        .delete(`/api/v1/groups/group-1/members/${memberId}`)
+        .delete(`/api/v1/groups/11111111-1111-4111-8111-111111111111/members/${memberId}`)
         .set("Authorization", `Bearer ${signToken(outsiderId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.FORBIDDEN);
@@ -456,7 +456,7 @@ describe("Groups API", () => {
       mockPrisma.group.findUnique.mockResolvedValueOnce(null);
 
       const res = await request(app)
-        .delete(`/api/v1/groups/missing/members/${memberId}`)
+        .delete(`/api/v1/groups/00000000-0000-4000-8000-000000000099/members/${memberId}`)
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NOT_FOUND);
@@ -469,7 +469,7 @@ describe("Groups API", () => {
       mockPrisma.groupMember.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
-        .delete(`/api/v1/groups/group-1/members/ghost`)
+        .delete(`/api/v1/groups/11111111-1111-4111-8111-111111111111/members/00000000-0000-4000-8000-000000000098`)
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NOT_FOUND);
@@ -481,7 +481,7 @@ describe("Groups API", () => {
         .mockResolvedValueOnce({ id: group.id, createdById: ownerId });
 
       const res = await request(app)
-        .delete(`/api/v1/groups/group-1/members/${ownerId}`)
+        .delete(`/api/v1/groups/11111111-1111-4111-8111-111111111111/members/${ownerId}`)
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.CONFLICT);

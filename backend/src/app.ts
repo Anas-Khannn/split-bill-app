@@ -31,6 +31,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   const env = loadEnv();
   const redis = options.redis ?? (isRedisAvailable() ? getRedis() : undefined);
 
+  const allowedOrigins = env.CORS_ORIGIN.split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   const app = express();
 
   configureEdge(app);
@@ -39,7 +43,17 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
   app.use(
     cors({
-      origin: env.CORS_ORIGIN,
+      // Only reflect origins that are explicitly allowlisted (comma-separated
+      // in CORS_ORIGIN). Unlisted origins get no Access-Control-* headers, so
+      // browsers block them; non-browser clients without an Origin header pass
+      // through untouched.
+      origin(origin, callback) {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        callback(null, allowedOrigins.includes(origin));
+      },
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: [
         "Content-Type",

@@ -60,8 +60,55 @@ export function loadEnv(): Env {
     throw new Error(`Invalid environment configuration:\n${formatted}`);
   }
 
-  _env = parsed.data;
+  const env = parsed.data;
+
+  assertProductionSafety(env);
+
+  _env = env;
   return _env;
+}
+
+/**
+ * Refuses to boot in production with development-shaped configuration:
+ * a weak/default JWT signing secret or a CORS origin list that still contains
+ * loopback origins or the localhost default. Development and test runs are
+ * unaffected. Throwing at boot (instead of proceeding) makes a production
+ * misconfiguration fail loudly rather than serving with known-weak settings.
+ */
+function assertProductionSafety(env: Env): void {
+  if (env.NODE_ENV !== "production") {
+    return;
+  }
+
+  const problems: string[] = [];
+
+  if (env.JWT_SECRET.length < 32) {
+    problems.push("JWT_SECRET must be at least 32 characters long in production");
+  }
+
+  const origins = env.CORS_ORIGIN.split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (origins.length === 0) {
+    problems.push("CORS_ORIGIN must list at least one allowed origin in production");
+  }
+  const loopbackOrigin = origins.some((origin) => {
+    try {
+      const { hostname } = new URL(origin);
+      return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+    } catch {
+      return true;
+    }
+  });
+  if (loopbackOrigin) {
+    problems.push(
+      "CORS_ORIGIN must not contain loopback/localhost origins in production (set the real client origin)",
+    );
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`Invalid production environment configuration:\n  ${problems.join("\n  ")}`);
+  }
 }
 
 export function getEnv(): Env {

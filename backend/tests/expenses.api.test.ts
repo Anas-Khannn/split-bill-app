@@ -37,17 +37,17 @@ import { prisma } from "../src/db/prisma.js";
 
 const mockPrisma = vi.mocked(prisma);
 
-const ownerId = "owner-1";
-const payerId = "payer-1";
-const memberId = "member-1";
-const outsiderId = "outsider-1";
+const ownerId = "55555555-5555-4555-8555-555555555555";
+const payerId = "77777777-7777-4777-8777-777777777777";
+const memberId = "66666666-6666-4666-8666-666666666666";
+const outsiderId = "88888888-8888-4888-8888-888888888888";
 
-const group = { id: "group-1", name: "Trip to Naran", createdById: ownerId };
+const group = { id: "11111111-1111-4111-8111-111111111111", name: "Trip to Naran", createdById: ownerId };
 
 function storedExpense(overrides: Record<string, unknown> = {}) {
   return {
-    id: "expense-1",
-    groupId: "group-1",
+    id: "33333333-3333-4333-8333-333333333333",
+    groupId: "11111111-1111-4111-8111-111111111111",
     paidById: payerId,
     description: "Dinner",
     amountMinorUnits: 1000n,
@@ -60,7 +60,7 @@ function storedExpense(overrides: Record<string, unknown> = {}) {
     splits: [
       {
         id: "split-1",
-        expenseId: "expense-1",
+        expenseId: "33333333-3333-4333-8333-333333333333",
         userId: payerId,
         amountMinorUnits: 334n,
         createdAt: new Date("2026-01-01T00:00:00Z"),
@@ -69,7 +69,7 @@ function storedExpense(overrides: Record<string, unknown> = {}) {
       },
       {
         id: "split-2",
-        expenseId: "expense-1",
+        expenseId: "33333333-3333-4333-8333-333333333333",
         userId: memberId,
         amountMinorUnits: 333n,
         createdAt: new Date("2026-01-01T00:00:00Z"),
@@ -78,7 +78,7 @@ function storedExpense(overrides: Record<string, unknown> = {}) {
       },
       {
         id: "split-3",
-        expenseId: "expense-1",
+        expenseId: "33333333-3333-4333-8333-333333333333",
         userId: ownerId,
         amountMinorUnits: 333n,
         createdAt: new Date("2026-01-01T00:00:00Z"),
@@ -133,13 +133,13 @@ describe("Expenses API", () => {
       });
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/expenses")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send(validCreateBody);
 
       expect(res.status).toBe(HTTP_STATUSES.CREATED);
       expect(res.body.success).toBe(true);
-      expect(res.body.data.expense.id).toBe("expense-1");
+      expect(res.body.data.expense.id).toBe("33333333-3333-4333-8333-333333333333");
       expect(res.body.data.expense.amountMinorUnits).toBe(1000);
       expect(res.body.data.expense.splits).toHaveLength(3);
       const sum = res.body.data.expense.splits.reduce(
@@ -150,7 +150,7 @@ describe("Expenses API", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).post("/api/v1/groups/group-1/expenses").send(validCreateBody);
+      const res = await request(app).post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses").send(validCreateBody);
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
     });
@@ -164,7 +164,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/expenses")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(outsiderId)}`)
         .send(validCreateBody);
 
@@ -179,7 +179,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/expenses")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send(validCreateBody);
 
@@ -190,7 +190,7 @@ describe("Expenses API", () => {
       mockPrisma.group.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
-        .post("/api/v1/groups/missing/expenses")
+        .post("/api/v1/groups/00000000-0000-4000-8000-000000000099/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send(validCreateBody);
 
@@ -206,7 +206,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/expenses")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ ...validCreateBody, amountMinorUnits: -100 });
 
@@ -216,7 +216,7 @@ describe("Expenses API", () => {
 
     it("should return 400 for an invalid splitType", async () => {
       const res = await request(app)
-        .post("/api/v1/groups/group-1/expenses")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ ...validCreateBody, splitType: "PERCENTAGE" });
 
@@ -225,7 +225,7 @@ describe("Expenses API", () => {
 
     it("should return 400 for an empty participants array", async () => {
       const res = await request(app)
-        .post("/api/v1/groups/group-1/expenses")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ ...validCreateBody, participants: [] });
 
@@ -234,7 +234,7 @@ describe("Expenses API", () => {
 
     it("should reject unexpected body fields", async () => {
       const res = await request(app)
-        .post("/api/v1/groups/group-1/expenses")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ ...validCreateBody, createdById: outsiderId });
 
@@ -250,7 +250,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .post("/api/v1/groups/group-1/expenses")
+        .post("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({
           description: "Dinner",
@@ -278,8 +278,8 @@ describe("Expenses API", () => {
       ]);
       mockPrisma.expense.findMany.mockResolvedValue([
         {
-          id: "expense-1",
-          groupId: "group-1",
+          id: "33333333-3333-4333-8333-333333333333",
+          groupId: "11111111-1111-4111-8111-111111111111",
           paidById: payerId,
           description: "Dinner",
           amountMinorUnits: 1000n,
@@ -294,7 +294,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .get("/api/v1/groups/group-1/expenses")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.OK);
@@ -305,7 +305,7 @@ describe("Expenses API", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).get("/api/v1/groups/group-1/expenses");
+      const res = await request(app).get("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses");
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
     });
@@ -319,7 +319,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .get("/api/v1/groups/group-1/expenses")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses")
         .set("Authorization", `Bearer ${signToken(outsiderId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.FORBIDDEN);
@@ -329,7 +329,7 @@ describe("Expenses API", () => {
       mockPrisma.group.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
-        .get("/api/v1/groups/missing/expenses")
+        .get("/api/v1/groups/00000000-0000-4000-8000-000000000099/expenses")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NOT_FOUND);
@@ -346,17 +346,17 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .get("/api/v1/expenses/expense-1")
+        .get("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(memberId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.OK);
       expect(res.body.success).toBe(true);
-      expect(res.body.data.expense.id).toBe("expense-1");
+      expect(res.body.data.expense.id).toBe("33333333-3333-4333-8333-333333333333");
       expect(res.body.data.expense.splits).toHaveLength(3);
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).get("/api/v1/expenses/expense-1");
+      const res = await request(app).get("/api/v1/expenses/33333333-3333-4333-8333-333333333333");
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
     });
@@ -370,7 +370,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .get("/api/v1/expenses/expense-1")
+        .get("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(outsiderId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.FORBIDDEN);
@@ -380,7 +380,7 @@ describe("Expenses API", () => {
       mockPrisma.expense.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
-        .get("/api/v1/expenses/missing")
+        .get("/api/v1/expenses/00000000-0000-4000-8000-000000000099")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NOT_FOUND);
@@ -395,7 +395,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .get("/api/v1/expenses/expense-1")
+        .get("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(memberId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.OK);
@@ -428,7 +428,7 @@ describe("Expenses API", () => {
       mockUpdateTransaction(updated);
 
       const res = await request(app)
-        .patch("/api/v1/expenses/expense-1")
+        .patch("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(memberId)}`)
         .send({ description: "Lunch", amountMinorUnits: 1200 });
 
@@ -445,7 +445,7 @@ describe("Expenses API", () => {
       mockUpdateTransaction(updated);
 
       const res = await request(app)
-        .patch("/api/v1/expenses/expense-1")
+        .patch("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(memberId)}`)
         .send({
           splitType: "EXACT",
@@ -460,7 +460,7 @@ describe("Expenses API", () => {
 
     it("should return 401 without authentication", async () => {
       const res = await request(app)
-        .patch("/api/v1/expenses/expense-1")
+        .patch("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .send({ description: "Lunch" });
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
@@ -471,7 +471,7 @@ describe("Expenses API", () => {
       mockPrisma.groupMember.findMany.mockResolvedValue(members);
 
       const res = await request(app)
-        .patch("/api/v1/expenses/expense-1")
+        .patch("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(outsiderId)}`)
         .send({ description: "Lunch" });
 
@@ -482,7 +482,7 @@ describe("Expenses API", () => {
       mockPrisma.expense.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
-        .patch("/api/v1/expenses/missing")
+        .patch("/api/v1/expenses/00000000-0000-4000-8000-000000000099")
         .set("Authorization", `Bearer ${signToken(ownerId)}`)
         .send({ description: "Lunch" });
 
@@ -491,7 +491,7 @@ describe("Expenses API", () => {
 
     it("should return 400 for an empty body", async () => {
       const res = await request(app)
-        .patch("/api/v1/expenses/expense-1")
+        .patch("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(memberId)}`)
         .send({});
 
@@ -505,7 +505,7 @@ describe("Expenses API", () => {
       mockPrisma.groupMember.findMany.mockResolvedValue(members);
 
       const res = await request(app)
-        .patch("/api/v1/expenses/expense-1")
+        .patch("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(memberId)}`)
         .send({ amountMinorUnits: 5000 });
 
@@ -518,7 +518,7 @@ describe("Expenses API", () => {
       mockPrisma.groupMember.findMany.mockResolvedValue(members);
 
       const res = await request(app)
-        .patch("/api/v1/expenses/expense-1")
+        .patch("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(memberId)}`)
         .send({ payerId: outsiderId });
 
@@ -543,7 +543,7 @@ describe("Expenses API", () => {
       });
 
       const res = await request(app)
-        .delete("/api/v1/expenses/expense-1")
+        .delete("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(memberId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NO_CONTENT);
@@ -551,7 +551,7 @@ describe("Expenses API", () => {
     });
 
     it("should return 401 without authentication", async () => {
-      const res = await request(app).delete("/api/v1/expenses/expense-1");
+      const res = await request(app).delete("/api/v1/expenses/33333333-3333-4333-8333-333333333333");
 
       expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
     });
@@ -565,7 +565,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .delete("/api/v1/expenses/expense-1")
+        .delete("/api/v1/expenses/33333333-3333-4333-8333-333333333333")
         .set("Authorization", `Bearer ${signToken(outsiderId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.FORBIDDEN);
@@ -575,7 +575,7 @@ describe("Expenses API", () => {
       mockPrisma.expense.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
-        .delete("/api/v1/expenses/missing")
+        .delete("/api/v1/expenses/00000000-0000-4000-8000-000000000099")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.NOT_FOUND);
