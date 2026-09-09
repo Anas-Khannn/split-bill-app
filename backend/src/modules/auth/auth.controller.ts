@@ -47,3 +47,27 @@ export async function updateCurrentUser(req: Request, res: Response): Promise<vo
   });
   res.status(HTTP_STATUSES.OK).json({ success: true, data: { user } });
 }
+
+export async function verifyEmail(req: Request, res: Response): Promise<void> {
+  const { token } = req.body as { token: string };
+  const result = await authService.verifyEmailAddress(token);
+  res.status(HTTP_STATUSES.OK).json({ success: true, data: result });
+}
+
+export async function resendVerification(req: Request, res: Response): Promise<void> {
+  const { email } = req.body as { email: string };
+  const result = await authService.resendVerification(email);
+  res.status(HTTP_STATUSES.OK).json({ success: true, data: result });
+}
+
+export async function forgotPassword(req: Request, res: Response): Promise<void> {
+  const { email } = req.body as { email: string };
+  const result = await authService.requestPasswordReset(email);
+  res.status(HTTP_STATUSES.OK).json({ success: true, data: result });
+}
+
+export async function resetPassword(req: Request, res: Response): Promise<void> {
+  const { token, newPassword } = req.body as { token: string; newPassword: string };
+  const result = await authService.resetUserPassword({ token, newPassword });
+  res.status(HTTP_STATUSES.OK).json({ success: true, data: result });
+}

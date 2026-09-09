@@ -13,21 +13,26 @@ function signToken(userId: string): string {
 }
 
 vi.mock("../src/db/prisma.js", async () => {
-  const findUnique = vi.fn();
-  const create = vi.fn();
-
   return {
     prisma: {
       $transaction: vi.fn(),
       user: {
-        findUnique,
-        create,
+        findUnique: vi.fn(),
+        create: vi.fn(),
         update: vi.fn(),
+        updateMany: vi.fn(),
+        findUniqueOrThrow: vi.fn(),
       },
       refreshToken: {
         findUnique: vi.fn(),
         create: vi.fn(),
         updateMany: vi.fn(),
+      },
+      authToken: {
+        findUnique: vi.fn(),
+        create: vi.fn(),
+        updateMany: vi.fn(),
+        deleteMany: vi.fn(),
       },
     },
   };
@@ -37,11 +42,10 @@ import { prisma } from "../src/db/prisma.js";
 import { hashRefreshToken } from "../src/modules/auth/refresh-token.util.js";
 
 const mockFindUnique = vi.mocked(prisma.user.findUnique);
-const mockCreate = vi.mocked(prisma.user.create);
 const mockUpdate = vi.mocked(prisma.user.update);
 const mockRefreshFindUnique = vi.mocked(prisma.refreshToken.findUnique);
-const mockRefreshCreate = vi.mocked(prisma.refreshToken.create);
 const mockRefreshUpdateMany = vi.mocked(prisma.refreshToken.updateMany);
+const mockAuthTokenFindUnique = vi.mocked(prisma.authToken.findUnique);
 const mockTransaction = vi.mocked(prisma.$transaction);
 
 const existingUser = {
@@ -49,9 +53,39 @@ const existingUser = {
   name: "Ahmed Raza",
   email: "ahmed@example.com",
   passwordHash: "hash",
+  emailVerifiedAt: null,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
+
+const verificationRecord = {
+  id: "at-1",
+  userId: "user-1",
+  purpose: "EMAIL_VERIFICATION",
+  tokenHash: "a".repeat(64),
+  expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+  consumedAt: null,
+  createdAt: new Date(),
+};
+
+const resetRecord = {
+  ...verificationRecord,
+  purpose: "PASSWORD_RESET",
+};
+
+function mockRegisterTransaction(): void {
+  const tx = {
+    user: { create: vi.fn().mockResolvedValue({ ...existingUser, passwordHash: "irrelevant" }) },
+    refreshToken: { create: vi.fn().mockResolvedValue({ id: "rt-1" }) },
+    authToken: { create: vi.fn().mockResolvedValue({ id: "at-1" }) },
+  };
+  const txUserCreate = vi.mocked(tx.user.create);
+  const txRefreshCreate = vi.mocked(tx.refreshToken.create);
+  const txAuthCreate = vi.mocked(tx.authToken.create);
+  mockTransaction.mockImplementation(async (fn) => fn(tx));
+
+  return () => ({ txUserCreate, txRefreshCreate, txAuthCreate });
+}
 
 describe("Authentication API", () => {
   let app: ReturnType<typeof createApp>;
@@ -64,10 +98,7 @@ describe("Authentication API", () => {
   describe("POST /api/v1/auth/register", () => {
     it("should register a new user and return 201 with user and token", async () => {
       mockFindUnique.mockResolvedValue(null);
-      mockCreate.mockResolvedValue({
-        ...existingUser,
-        passwordHash: "irrelevant",
-      });
+      const captures = mockRegisterTransaction();
 
       const res = await request(app)
         .post("/api/v1/auth/register")
@@ -81,9 +112,26 @@ describe("Authentication API", () => {
       expect(res.body.data.refreshToken).toBeTruthy();
       expect(res.body.data.user.passwordHash).toBeUndefined();
       expect(res.body.data.user.password).toBeUndefined();
-      expect(res.body.data.refreshToken).not.toBe(
-        mockRefreshCreate.mock.calls[0]?.[0].data.tokenHash,
+
+      const { txUserCreate, txRefreshCreate, txAuthCreate } = captures();
+      expect(txUserCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ passwordHash: expect.any(String) }),
+        }),
       );
+      const hashedPassword = txUserCreate.mock.calls[0]?.[0].data.passwordHash as string;
+      expect(hashedPassword).not.toBe("password123");
+
+      const refreshHash = txRefreshCreate.mock.calls[0]?.[0].data.tokenHash as string;
+      expect(refreshHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(res.body.data.refreshToken).not.toBe(refreshHash);
+
+      const authData = txAuthCreate.mock.calls[0]?.[0].data as {
+        purpose: string;
+        tokenHash: string;
+      };
+      expect(authData.purpose).toBe("EMAIL_VERIFICATION");
+      expect(authData.tokenHash).toMatch(/^[0-9a-f]{64}$/);
     });
 
     it("should return 409 when the email is already registered", async () => {
@@ -115,7 +163,7 @@ describe("Authentication API", () => {
 
       expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
       expect(mockFindUnique).not.toHaveBeenCalled();
-      expect(mockCreate).not.toHaveBeenCalled();
+      expect(mockTransaction).not.toHaveBeenCalled();
     });
   });
 
@@ -314,6 +362,288 @@ describe("Authentication API", () => {
 
       expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
       expect(res.body.success).toBe(false);
+    });
+  });
+
+  describe("POST /api/v1/auth/verify-email", () => {
+    it("should verify a valid token and return 200", async () => {
+      mockAuthTokenFindUnique.mockResolvedValue(verificationRecord);
+      mockTransaction.mockImplementation(async (fn) => {
+        const tx = {
+          authToken: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          user: { update: vi.fn().mockResolvedValue(existingUser) },
+        };
+        return fn(tx);
+      });
+
+      const res = await request(app)
+        .post("/api/v1/auth/verify-email")
+        .send({ token: "raw-verification-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.message).toContain("verified");
+    });
+
+    it("should return 401 for an unknown token", async () => {
+      mockAuthTokenFindUnique.mockResolvedValue(null);
+
+      const res = await request(app)
+        .post("/api/v1/auth/verify-email")
+        .send({ token: "raw-verification-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it("should return 401 for an already-used token", async () => {
+      mockAuthTokenFindUnique.mockResolvedValue({ ...verificationRecord, consumedAt: new Date() });
+
+      const res = await request(app)
+        .post("/api/v1/auth/verify-email")
+        .send({ token: "used-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("should return 401 for an expired token", async () => {
+      mockAuthTokenFindUnique.mockResolvedValue({
+        ...verificationRecord,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+
+      const res = await request(app)
+        .post("/api/v1/auth/verify-email")
+        .send({ token: "expired-token" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("should return 400 for a missing or malformed token", async () => {
+      const missing = await request(app).post("/api/v1/auth/verify-email").send({});
+      const malformed = await request(app)
+        .post("/api/v1/auth/verify-email")
+        .send({ token: "not base64url!!" });
+
+      expect(missing.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(malformed.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(mockAuthTokenFindUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("POST /api/v1/auth/resend-verification", () => {
+    it("should mint a fresh token for an unverified account and return 200", async () => {
+      mockFindUnique.mockResolvedValue(existingUser);
+      mockTransaction.mockImplementation(async (fn) => {
+        const tx = {
+          authToken: {
+            deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+            create: vi.fn().mockResolvedValue({ id: "at-2" }),
+          },
+        };
+        const result = await fn(tx);
+        expect(tx.authToken.deleteMany).toHaveBeenCalledWith({
+          where: { userId: "user-1", purpose: "EMAIL_VERIFICATION" },
+        });
+        expect(tx.authToken.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: {
+              userId: "user-1",
+              purpose: "EMAIL_VERIFICATION",
+              tokenHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+              expiresAt: expect.any(Date),
+            },
+          }),
+        );
+        return result;
+      });
+
+      const res = await request(app)
+        .post("/api/v1/auth/resend-verification")
+        .send({ email: "ahmed@example.com" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.message).toContain("verification email is on its way");
+    });
+
+    it("should return the generic 200 for an unknown email without minting a token", async () => {
+      mockFindUnique.mockResolvedValue(null);
+
+      const res = await request(app)
+        .post("/api/v1/auth/resend-verification")
+        .send({ email: "nobody@example.com" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.data.message).toContain("verification email is on its way");
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it("should return the generic 200 for an already-verified account", async () => {
+      mockFindUnique.mockResolvedValue({ ...existingUser, emailVerifiedAt: new Date() });
+
+      const res = await request(app)
+        .post("/api/v1/auth/resend-verification")
+        .send({ email: "ahmed@example.com" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.data.message).toContain("verification email is on its way");
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it("should return 400 for an invalid email", async () => {
+      const res = await request(app)
+        .post("/api/v1/auth/resend-verification")
+        .send({ email: "not-an-email" });
+
+      expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(mockFindUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("POST /api/v1/auth/forgot-password", () => {
+    it("should mint a fresh reset token for a known account and return 200", async () => {
+      mockFindUnique.mockResolvedValue(existingUser);
+      mockTransaction.mockImplementation(async (fn) => {
+        const tx = {
+          authToken: {
+            deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+            create: vi.fn().mockResolvedValue({ id: "at-2" }),
+          },
+        };
+        const result = await fn(tx);
+        expect(tx.authToken.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: {
+              userId: "user-1",
+              purpose: "PASSWORD_RESET",
+              tokenHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+              expiresAt: expect.any(Date),
+            },
+          }),
+        );
+        return result;
+      });
+
+      const res = await request(app)
+        .post("/api/v1/auth/forgot-password")
+        .send({ email: "ahmed@example.com" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.message).toContain("password reset email is on its way");
+    });
+
+    it("should return the generic 200 for an unknown email without minting a token", async () => {
+      mockFindUnique.mockResolvedValue(null);
+
+      const res = await request(app)
+        .post("/api/v1/auth/forgot-password")
+        .send({ email: "nobody@example.com" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.data.message).toContain("password reset email is on its way");
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it("should return 400 for an invalid email", async () => {
+      const res = await request(app)
+        .post("/api/v1/auth/forgot-password")
+        .send({ email: "" });
+
+      expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(mockFindUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("POST /api/v1/auth/reset-password", () => {
+    function mockResetTransaction() {
+      mockTransaction.mockImplementation(async (fn) => {
+        const tx = {
+          authToken: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          user: {
+            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+            findUniqueOrThrow: vi.fn().mockResolvedValue(existingUser),
+          },
+          refreshToken: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        };
+        const result = await fn(tx);
+        expect(tx.refreshToken.updateMany).toHaveBeenCalledWith({
+          where: { userId: "user-1", revokedAt: null },
+          data: { revokedAt: expect.any(Date) },
+        });
+        return result;
+      });
+    }
+
+    it("should update the password and revoke all sessions, returning 200", async () => {
+      mockAuthTokenFindUnique.mockResolvedValue(resetRecord);
+      mockResetTransaction();
+
+      const res = await request(app)
+        .post("/api/v1/auth/reset-password")
+        .send({ token: "raw-reset-token", newPassword: "a-new-secure-password" });
+
+      expect(res.status).toBe(HTTP_STATUSES.OK);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.message).toContain("has been reset");
+    });
+
+    it("should return 401 for an unknown token", async () => {
+      mockAuthTokenFindUnique.mockResolvedValue(null);
+
+      const res = await request(app)
+        .post("/api/v1/auth/reset-password")
+        .send({ token: "unknown-token", newPassword: "a-new-secure-password" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it("should return 401 for an already-used token", async () => {
+      mockAuthTokenFindUnique.mockResolvedValue({ ...resetRecord, consumedAt: new Date() });
+
+      const res = await request(app)
+        .post("/api/v1/auth/reset-password")
+        .send({ token: "used-token", newPassword: "a-new-secure-password" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("should return 401 for an expired token", async () => {
+      mockAuthTokenFindUnique.mockResolvedValue({
+        ...resetRecord,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+
+      const res = await request(app)
+        .post("/api/v1/auth/reset-password")
+        .send({ token: "expired-token", newPassword: "a-new-secure-password" });
+
+      expect(res.status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("should return 400 for a missing token or a weak password", async () => {
+      const missingToken = await request(app)
+        .post("/api/v1/auth/reset-password")
+        .send({ newPassword: "a-new-secure-password" });
+      const weakPassword = await request(app)
+        .post("/api/v1/auth/reset-password")
+        .send({ token: "raw-reset-token", newPassword: "short" });
+      const extraField = await request(app)
+        .post("/api/v1/auth/reset-password")
+        .send({ token: "raw-reset-token", newPassword: "a-new-secure-password", role: "admin" });
+
+      expect(missingToken.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(weakPassword.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(extraField.status).toBe(HTTP_STATUSES.BAD_REQUEST);
+      expect(mockAuthTokenFindUnique).not.toHaveBeenCalled();
     });
   });
 

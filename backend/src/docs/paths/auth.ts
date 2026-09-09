@@ -12,6 +12,12 @@ const session = (description: string, example: unknown) =>
     data: example,
   });
 
+const message = (description: string, example: string) =>
+  jsonResponse(description, successEnvelope(ref("MessageResult")), {
+    success: true,
+    data: { message: example },
+  });
+
 const authPaths: Record<string, PathItemObject> = {
   "/api/v1/auth/register": {
     post: {
@@ -215,6 +221,116 @@ const authPaths: Record<string, PathItemObject> = {
         401: componentResponse("Unauthorized"),
         404: componentResponse("NotFound"),
         409: componentResponse("Conflict"),
+      },
+    },
+  },
+  "/api/v1/auth/verify-email": {
+    post: {
+      tags: [AUTH_TAG],
+      summary: "Verify an email address",
+      description:
+        "Confirms a user's email address using the single-use token from the verification email. " +
+        "A token can be used exactly once and expires after the configured TTL. " +
+        "Invalid, expired, and already-used tokens each return 401. Public endpoint.",
+      operationId: "verifyEmailAddress",
+      security: [],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: ref("VerifyEmailRequest"),
+            example: { token: "<verification-token>" },
+          },
+        },
+      },
+      responses: {
+        200: message("The email address was verified.", "Email verified successfully."),
+        400: componentResponse("BadRequest"),
+        401: componentResponse("Unauthorized"),
+      },
+    },
+  },
+  "/api/v1/auth/resend-verification": {
+    post: {
+      tags: [AUTH_TAG],
+      summary: "Resend the verification email",
+      description:
+        "Sends a fresh verification email for the given address. The previous verification link for that account stops working. " +
+        "The endpoint returns the same success message whether or not the address belongs to an account (no account enumeration), " +
+        "and never reveals whether the requested account is already verified. Email delivery is best-effort. Public endpoint.",
+      operationId: "resendVerificationEmail",
+      security: [],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: ref("EmailRequest"),
+            example: { email: "ahmed@example.com" },
+          },
+        },
+      },
+      responses: {
+        200: message(
+          "Accepted. A verification email is sent when the address belongs to an unverified account.",
+          "If that email address belongs to an account, a verification email is on its way.",
+        ),
+        400: componentResponse("BadRequest"),
+      },
+    },
+  },
+  "/api/v1/auth/forgot-password": {
+    post: {
+      tags: [AUTH_TAG],
+      summary: "Request a password reset",
+      description:
+        "Sends a single-use password-reset email for the given address if it belongs to an account. A previous reset link for that account stops working. " +
+        "The endpoint returns the same success message whether or not the address belongs to an account (no account enumeration). " +
+        "Email delivery is best-effort. Public endpoint.",
+      operationId: "requestPasswordReset",
+      security: [],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: ref("EmailRequest"),
+            example: { email: "ahmed@example.com" },
+          },
+        },
+      },
+      responses: {
+        200: message(
+          "Accepted. A password-reset email is sent when the address belongs to an account.",
+          "If that email address belongs to an account, a password reset email is on its way.",
+        ),
+        400: componentResponse("BadRequest"),
+      },
+    },
+  },
+  "/api/v1/auth/reset-password": {
+    post: {
+      tags: [AUTH_TAG],
+      summary: "Reset a password",
+      description:
+        "Sets a new password using the single-use token from the reset email. The token can be used exactly once and expires after the configured TTL; " +
+        "a successful reset revokes every existing session (all refresh tokens) for the user. Public endpoint.",
+      operationId: "resetUserPassword",
+      security: [],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: ref("ResetPasswordRequest"),
+            example: { token: "<reset-token>", newPassword: "a-new-secure-password" },
+          },
+        },
+      },
+      responses: {
+        200: message(
+          "The password was changed and all existing sessions were revoked.",
+          "Your password has been reset. Please sign in with your new password.",
+        ),
+        400: componentResponse("BadRequest"),
+        401: componentResponse("Unauthorized"),
       },
     },
   },

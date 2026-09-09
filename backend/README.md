@@ -656,7 +656,7 @@ accordingly; nothing about the edge layer conflicts with that.
 
 All feature endpoints are mounted under `/api/v1`:
 
-- `/api/v1/auth` — Authentication (register, login, refresh, logout, current user)
+- `/api/v1/auth` — Authentication (register, login, refresh, logout, current user, email verification, password recovery)
 - `/api/v1/groups` — Group management & membership
 - `/api/v1/expenses` — Expense tracking & split calculation
 - `/api/v1/settlements` — Settlement recording & balance calculation
@@ -803,6 +803,76 @@ Request body:
 - `404` — the authenticated user no longer exists
 - `409` — the email is already in use by another account
 
+### Email verification and password recovery
+
+All four endpoints are public and accept JSON bodies. Email delivery is
+**best-effort**: a temporary SMTP failure does not fail the request (an
+`EmailDeliveryError` is logged and the account/request still succeeds), and the
+sender can simply request the email again. When `EMAIL_ENABLED=false` (the
+default) no SMTP connection is attempted and the email is written to the log
+transport instead.
+
+#### POST /api/v1/auth/verify-email
+
+Confirms a user's email address with the single-use token from the verification
+email. A token can be used exactly once and expires after
+`EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` (default 24 hours).
+
+```json
+{ "token": "<verification-token>" }
+```
+
+- `200` — email verified; returns `{ success, data: { message } }`
+- `400` — missing or malformed token
+- `401` — invalid, expired, or already-used token
+
+#### POST /api/v1/auth/resend-verification
+
+Sends a fresh verification email for the given address. Any previous
+verification link for that account is immediately invalidated. The endpoint
+returns the **same success message** whether the address is unknown, already
+verified, or belongs to an unverified account, so it never reveals whether an
+email exists.
+
+```json
+{ "email": "ahmed@example.com" }
+```
+
+- `200` — accepted (no account enumeration)
+- `400` — invalid email
+
+#### POST /api/v1/auth/forgot-password
+
+Sends a single-use password-reset email if the address belongs to an account,
+and invalidates any previous reset link for that account. Like
+`resend-verification`, it always returns the same generic success message.
+
+```json
+{ "email": "ahmed@example.com" }
+```
+
+- `200` — accepted (no account enumeration)
+- `400` — invalid email
+
+#### POST /api/v1/auth/reset-password
+
+Sets a new password using the single-use token from the reset email. The token
+expires after `PASSWORD_RESET_TOKEN_TTL_MINUTES` (default 60 minutes) and can be
+used only once. A successful reset **revokes every existing session** (all
+refresh tokens) for the user.
+
+```json
+{ "token": "<reset-token>", "newPassword": "password123" }
+```
+
+- `200` — password changed; returns `{ success, data: { message } }`
+- `400` — missing or malformed token, or invalid password
+- `401` — invalid, expired, or already-used token
+
+> The four endpoints share a dedicated, tighter rate limit
+> (`AUTH_EMAIL_RATE_LIMIT_MAX`, default 5 requests per window per IP) since they
+> accept unauthenticated email or token input.
+
 ### Authentication Internals
 
 - Access tokens are **JWT** signed with the configured `JWT_SECRET` and expire
@@ -817,6 +887,29 @@ Request body:
   transaction: the old session is conditionally revoked (`revokedAt: null` guard)
   and its replacement is persisted atomically, making replay of an already-rotated
   token fail safely even under concurrency.
+- Email-verification and password-reset tokens are **opaque, high-entropy random
+  strings** (256 bits) whose SHA-256 hashes live in the `AuthToken` table
+  (`tokenHash` unique). A token belongs to exactly one user and purpose
+  (`EMAIL_VERIFICATION`/`PASSWORD_RESET`), can be used once (guarded in the same
+  transaction), and expires after the configured TTL. Only the hash is ever
+  stored — raw tokens, refresh tokens, passwords, and SMTP credentials are never
+  logged.
+- Re-issuing a token for the same user/purpose (resend / forgot) atomically
+  deletes the previous one, so old links stop working. Password reset consumes
+  the token, replaces the password hash, and revokes all refresh sessions in a
+  single transaction.
+- Resend/forgot endpoints return the same generic message for unknown, known,
+  and already-verified accounts and spend a comparable bcrypt baseline on the
+  unknown branch, preventing account enumeration and (best-effort) timing
+  differences.
+
+### Registration notes
+
+A successful registration also creates the refresh token and the
+email-verification token in the same transaction. Signing in does **not** require
+prior verification; `emailVerifiedAt` is set when `verify-email` succeeds.
+Resending for an already-verified account returns the generic message and mints
+no new token.
 - The `authenticate` middleware (`src/middleware/authenticate.ts`) validates the
   `Authorization: Bearer` header on protected routes and attaches `req.userId`.
 - Passwords are never stored in plaintext and never returned to clients.
@@ -1616,6 +1709,10 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 - Revocation-based session logout (idempotent) and `REFRESH_TOKEN_INVALID` safe errors
 - `authenticate` middleware for protecting routes
 - **Profile update** (`PATCH /api/v1/auth/me`) — name/email update with email-uniqueness enforcement and strict rejection of privileged fields
+- **Email verification** (`POST /api/v1/auth/verify-email`, `POST /api/v1/auth/resend-verification`) — single-use opaque tokens (SHA-256 hashed at rest) with configurable TTL; resend invalidates the previous link; generic success messages prevent account enumeration
+- **Password recovery** (`POST /api/v1/auth/forgot-password`, `POST /api/v1/auth/reset-password`) — single-use reset tokens, configurable TTL, atomic consume + password change + full session revocation
+- **Transactional email service** (`src/modules/email/`) — `EmailProvider` abstraction with a Nodemailer SMTP transport (`EMAIL_ENABLED=true`) and a log transport (`EMAIL_ENABLED=false`, the local-development default); best-effort delivery that never fails registration/forgot-password; Strict no-secrets logging (no bodies, tokens, passwords, or SMTP credentials in logs); email metrics (`emails_sent_total`, `email_send_failures_total`)
+- Dedicated sensitive rate limiter (`AUTH_EMAIL_RATE_LIMIT_MAX`) for the public email/verification endpoints
 - Module-based architecture (`src/modules/auth/`): routes → controller → service → repository → Prisma
 - **Groups & membership API** (`/api/v1/groups` CRUD + add/remove members)
 - Owner/member authorization for groups (`ForbiddenError` / HTTP 403)
@@ -1677,7 +1774,6 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
 
 The following features are **NOT implemented** in this chunk:
 
-- Email verification / password reset
 - Account deletion / deactivation (never implemented: Prisma `Restrict` foreign
   keys and the absence of a deactivation column make deletion unsafe — deleting
   a user would corrupt historical financial records; account lifecycle stays out
