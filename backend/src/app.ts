@@ -15,6 +15,7 @@ import { getRedis, isRedisAvailable } from "./redis/redisClient.js";
 import type { RedisLike } from "./redis/redisClient.js";
 import healthRoutes from "./routes/health.js";
 import apiV1Routes from "./routes/index.js";
+import { docsRoutes } from "./docs/index.js";
 
 export interface CreateAppOptions {
   /**
@@ -63,6 +64,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   if (env.METRICS_ENABLED === "true") {
     app.use("/metrics", metricsRoutes);
   }
+
+  app.use("/api/docs", docsRoutes);
 
   app.use("/api/v1/auth", authLimiter(redis));
   app.use("/api/v1", apiV1Routes);

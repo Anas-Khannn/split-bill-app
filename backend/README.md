@@ -12,6 +12,7 @@ REST API for the Hisab split-bill application. Built with TypeScript, Node.js, E
 - **Validation:** Zod
 - **Testing:** Vitest + Supertest
 - **Linting:** ESLint + Prettier
+- **API Documentation:** OpenAPI 3.0.3 (self-hosted Swagger UI via `swagger-ui-dist`)
 
 ## Directory Structure
 
@@ -34,11 +35,20 @@ backend/
 │   │   └── trustProxy.ts         # TRUST_PROXY parsing (req.ip resolution)
 │   ├── errors/
 │   │   └── app.error.ts          # Base AppError + specialized error classes
+│   ├── docs/                     # OpenAPI 3.0.3 specification + self-hosted Swagger UI
+│   │   ├── openapi.types.ts      # Typed OpenAPI 3.0.x document shapes
+│   │   ├── helpers.ts            # Envelope/response/$ref helpers
+│   │   ├── components/           # Reusable schemas, responses, parameters, security
+│   │   ├── paths/                # One file per path-group (health, auth, groups, ...)
+│   │   ├── openapi.ts            # Document assembly (create/get with module cache)
+│   │   ├── docs.routes.ts        # /api/docs UI, /openapi.json, asset + initializer serving
+│   │   └── index.ts              # Public exports for the docs module
 │   ├── middleware/
 │   │   ├── authenticate.ts       # JWT bearer-token auth for protected routes
 │   │   ├── errorHandler.ts       # Centralized error handling + 404
 │   │   ├── rateLimiter.ts        # API rate limiting (general + auth tiers)
 │   │   └── validate.ts           # Zod validation middleware
+│   ├── metrics/                  # Prometheus text-format metrics (registry, HTTP metrics, routes)
 │   ├── redis/                    # Redis infrastructure (infra, no domain logic)
 │   │   ├── redisClient.ts        # Lazy ioredis client, connect/disconnect, RedisLike contract
 │   │   ├── rateLimitStore.ts     # Redis-backed express-rate-limit store (Lua fixed window)
@@ -133,6 +143,8 @@ backend/
 │   ├── errors.test.ts            # Error class unit tests
 │   ├── asyncHandler.test.ts      # Async handler middleware tests
 │   ├── health.test.ts            # Readiness endpoint tests (mocked DB)
+│   ├── docs.api.test.ts          # /api/docs routes + documented-route parity tests
+│   ├── openapi.document.test.ts  # OpenAPI spec validation ($ref, security, contracts)
 │   └── middleware.test.ts        # Validation middleware tests
 │   └── rate-limit.test.ts        # Rate limiting tests (envelope, headers, window reset, per-IP isolation)
 │   └── rate-limit.redis.test.ts  # Redis-backed rate limiting tests (shared state, fail-open, prefixes)
@@ -265,6 +277,46 @@ Readiness check. Verifies database connectivity.
 
 - `200 { "status": "ready" }` — database is reachable
 - `503 { "status": "unavailable", "message": "Service is not ready yet." }` — database is unreachable
+
+## API Documentation (OpenAPI & Swagger UI)
+
+The backend ships a complete, hand-maintained **OpenAPI 3.0.3** specification of
+the public API and serves it through an interactive Swagger UI. Everything is
+self-hosted by the backend process — no CDN, no third-party dashboard, and no
+loosened security headers:
+
+- **`GET /api/docs`** — interactive Swagger UI for exploring and trying every endpoint
+- **`GET /api/docs/openapi.json`** — the raw OpenAPI document as JSON (versioned with the API)
+
+The specification lives under `src/docs/` as a typed, modular OpenAPI document:
+reusable schemas/responses/parameters/security schemes in `components/`, one
+file per path-group in `paths/`, assembled by `openapi.ts` and mounted at
+`/api/docs` in `app.ts`. The Swagger UI assets come from `swagger-ui-dist`
+(served at `/api/docs/assets/`), and the app initializer is an external file
+(`/api/docs/swagger-initializer.js`) — there are no inline scripts, so the
+Helmet Content-Security-Policy is never relaxed.
+
+The document is validated by the test suite rather than left to drift:
+
+- `tests/openapi.document.test.ts` — metadata, expected path list, unique
+  `operationId`s, `in: path` parameter declarations for every `{variable}`, the
+  idempotency header, pagination parameters, and that **every `$ref` resolves**.
+- `tests/docs.api.test.ts` — `/api/docs` routes serve parseable, stable output,
+  every documented operation exists in the running Express app and enforces the
+  documented auth contract (401 for protected, 400/200/503 for public), and every
+  Express route that is not API-documentation infrastructure is covered by the
+  spec.
+
+Key conventions encoded in the specification:
+
+- Success responses use the envelope `{ "success": true, "data": ... }`; errors
+  use `{ "success": false, "message": "...", "errors": [...] }`.
+- All monetary amounts are **integers in minor units** — no floats are used for
+  money anywhere in the API surface.
+- `/api/v1` routes require `Authorization: Bearer <jwt>`; only
+  register/login/refresh/logout and the health/metrics probes are public.
+- `POST /api/v1/groups/{id}/settlements` requires an `Idempotency-Key` header
+  (8–128 chars, letters/digits/`_`/`-`/`.`).
 
 ## Request Tracing
 
@@ -1549,6 +1601,10 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
   to PostgreSQL with logging (read=miss, write=log, invalidation=log), never raw
   Redis errors
 - Test suite (Vitest + Supertest, all passing without a live DB)
+- **OpenAPI documentation** (`src/docs/`) — a typed, modular OpenAPI 3.0.3 spec
+  served as self-hosted interactive Swagger UI at `GET /api/docs` and raw JSON at
+  `GET /api/docs/openapi.json`, with tests asserting documented routes exist,
+  the auth contract matches, `$ref`s resolve, and money stays integer
 
 ## Not Yet Implemented
 
