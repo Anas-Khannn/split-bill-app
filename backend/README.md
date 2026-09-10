@@ -158,6 +158,10 @@ backend/
 │   └── summary.api.test.ts       # Group summary endpoint integration tests (202, 403, 404, 500)
 │   └── settlement.lock.test.ts   # Settlement creation under the lock (409 conflict, degrade, success)
 │   └── edge.test.ts              # Edge layer tests (trust proxy, URL/body/request-ID guard, 413)
+│   ├── integration/
+│   │   ├── helpers.ts            # Opt-in gating + test Postgres/Redis connection helpers
+│   │   ├── postgres.integration.test.ts  # Real-Postgres suites (transactions, constraints, rollback, balances)
+│   │   └── redis.integration.test.ts     # Real-Redis suites (cache store, lock, rate-limit store, primitives)
 │   └── helpers/
 │       └── fakeRedis.ts          # In-memory + failing Redis fakes for tests
 ├── .env.example
@@ -166,7 +170,8 @@ backend/
 ├── prettier.config.js
 ├── package.json
 ├── tsconfig.json
-├── vitest.config.ts
+├── vitest.config.ts              # Unit/api test config (excludes tests/integration/**)
+├── vitest.integration.config.ts  # Integration test config (tests/integration/** only)
 └── README.md
 ```
 
@@ -189,6 +194,18 @@ npm install
 
 Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or real PostgreSQL credentials.**
 
+The process reads a single environment for a given context. Use **separate
+variables per context** — never point dev, unit tests, integration tests, or CI
+at the same database/Redis:
+
+| Context | How it is configured |
+|---|---|
+| Development / production server & worker | `DATABASE_URL`, `REDIS_URL`, and app settings (below) |
+| Unit tests (`npm test`) | Fully hermetic — hardcoded mock credentials in `tests/setup.ts`; no real services touched |
+| Integration tests (`npm run test:integration`) | Must opt in with `RUN_INTEGRATION_TESTS=true` plus `TEST_DATABASE_URL` (and optionally `TEST_REDIS_URL`) |
+| Prisma CLI (`db:migrate`, `db:studio`, `db:validate`) | Reads `DATABASE_URL` (and a working `NODE_ENV`) |
+| CI | Provisions its own Postgres 16 + Redis 7 containers and sets the `TEST_*` variables (see [Continuous Integration](#continuous-integration)) |
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `NODE_ENV` | No | `development` | `development`, `production`, or `test` |
@@ -202,6 +219,9 @@ Copy `.env.example` to `.env` and configure. **Never commit your `.env` file or 
 | `RATE_LIMIT_MAX` | No | `100` | Max requests per client IP per window for non-auth endpoints |
 | `AUTH_RATE_LIMIT_MAX` | No | `20` | Max requests per client IP per window for `/api/v1/auth/*` |
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string for distributed rate limiting/locking. Never commit one containing a password. |
+| `RUN_INTEGRATION_TESTS` | No | — | Set to `true` to enable the real-infrastructure integration suites. Required only when running `npm run test:integration`; must be a deliberate opt-in. |
+| `TEST_DATABASE_URL` | No | — | Dedicated PostgreSQL connection string for the integration suites. Never point it at development/production data; the suites refuse to run without it. |
+| `TEST_REDIS_URL` | No | `redis://localhost:6379/15` | Dedicated Redis connection string for the integration suites. Defaults to logical database 15 so a dev server's keyspace is never touched. |
 | `TRUST_PROXY` | No | `false` | Reverse-proxy trust level for `req.ip`. Use `true`/`1` (first hop), a hop count, or an Express value (`loopback`, subnet, ...). Leave `false` when no proxy is deployed. |
 | `DISTRIBUTED_LOCK_TTL_MS` | No | `10000` | TTL of distributed locks in milliseconds. Must exceed the longest protected operation. |
 | `JOB_QUEUE_MAX_ATTEMPTS` | No | `5` | Retry budget for background jobs before they are discarded. |
@@ -244,7 +264,8 @@ npm run worker           # Start the background worker (tsx, development)
 npm run build            # Compile TypeScript to dist/
 npm start                # Run compiled server from dist/
 npm run start:worker     # Run compiled worker from dist/
-npm test                 # Run test suite (Vitest)
+npm test                 # Run unit/api test suite (Vitest, hermetic — no live services)
+npm run test:integration # Run integration suites against a real PostgreSQL + Redis (see "Continuous Integration")
 npm run test:watch       # Run tests in watch mode
 npm run test:coverage    # Run tests with coverage
 npm run lint             # Run ESLint
@@ -425,8 +446,11 @@ the database) and stays up — but it is **required** by the **worker process**,
 which cannot move jobs without a queue transport. Redis is accessed only through
 the narrow `RedisLike` contract in `src/redis/redisClient.ts` (a single lazy
 ioredis client, created with `enableOfflineQueue: false` so commands fail fast
-instead of queueing), so tests can inject an in-memory fake — the test suite
-runs without a live Redis server.
+instead of queueing), so tests can inject an in-memory fake — the unit test suite runs without a live
+Redis server. Real-Redis behavior is additionally verified by the integration
+suites under `tests/integration/` (`npm run test:integration`), which opt in via
+`RUN_INTEGRATION_TESTS=true` and `TEST_REDIS_URL` (default
+`redis://localhost:6379/15`).
 
 - `connectRedis()` runs at startup and is **non-fatal for the API server**: if
   Redis is unreachable the server keeps serving with degraded behavior
@@ -1755,7 +1779,10 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
   invalidation on rename/delete/member add/member remove; Redis outages degrade
   to PostgreSQL with logging (read=miss, write=log, invalidation=log), never raw
   Redis errors
-- Test suite (Vitest + Supertest, all passing without a live DB)
+- Two test tiers: **unit/api tests** (`npm test`, hermetic, mocked Prisma/Redis —
+  passing without a live DB) and **integration tests**
+  (`npm run test:integration`, real PostgreSQL + Redis, opt-in via
+  `RUN_INTEGRATION_TESTS` and `TEST_DATABASE_URL`)
 - **OpenAPI documentation** (`src/docs/`) — a typed, modular OpenAPI 3.0.3 spec
   served as self-hosted interactive Swagger UI at `GET /api/docs` and raw JSON at
   `GET /api/docs/openapi.json`, with tests asserting documented routes exist,
@@ -1893,14 +1920,41 @@ every pull request and push to `master`.
 | TypeScript type check | `npm run typecheck` | Type errors |
 | Unit tests | `npm test` | Test failures |
 | Database migrations | `npm run db:migrate` | Migration failure |
+| Integration tests | `npm run test:integration` | Test failures (runs after migrations, against real Postgres + Redis) |
 | Security audit | `npm audit --audit-level=moderate` | Moderate+ vulnerabilities |
 | Production build | `npm run build` | Compilation errors |
 
 ### Infrastructure services
 
-CI spins up disposable PostgreSQL 16 and Redis 7 containers for integration-test
-readiness. The current test suite uses in-memory fakes (no live connections), but
-the services are available for future integration tests.
+CI spins up disposable PostgreSQL 16 and Redis 7 containers. After migrations
+are applied, the **integration suites** (`npm run test:integration`) run against
+these containers — they exercise real transactions/constraints/rollback,
+distributed locking, Redis-backed rate limiting, and the cache store. The
+integration suites **opt in** via the CI job environment
+(`RUN_INTEGRATION_TESTS=true`, `TEST_DATABASE_URL`, `TEST_REDIS_URL`); failing
+integration tests fail the pipeline. The unit suite (`npm test`) remains
+hermetic and never touches real services.
+
+### Running integration tests locally
+
+```bash
+cd backend
+npm run test:integration
+```
+
+This requires opt-in (a deliberate decision) and a dedicated PostgreSQL:
+
+```bash
+RUN_INTEGRATION_TESTS=true \
+TEST_DATABASE_URL=postgresql://user:password@localhost:5432/hisab_kitab_test \
+npm run test:integration
+```
+
+`TEST_REDIS_URL` defaults to `redis://localhost:6379/15`; if your local Redis is
+elsewhere, set it explicitly. The suites skip (report skipped, never silently
+pass) when opt-in or `TEST_DATABASE_URL` is missing, so an accidental run cannot
+execute destructive statements against development data. Migrations/tables in
+the test database must be up to date before running (`npm run db:migrate`).
 
 ### When CI runs
 
@@ -1927,7 +1981,10 @@ npm run build
 - **Lint failures:** run `npm run lint:fix` to auto-fix.
 - **Format failures:** run `npm run format` to auto-format.
 - **Type errors:** run `npm run typecheck` and fix the reported issues.
-- **Test failures:** run `npm test` locally to reproduce. All tests use mocked
-  Prisma/Redis — no external services are required.
+- **Test failures:** run `npm test` locally to reproduce. Unit/api tests use
+  mocked Prisma/Redis — no external services are required. Integration-suite
+  failures require real services: set `RUN_INTEGRATION_TESTS=true` and
+  `TEST_DATABASE_URL` (see above), and note the suites skip when those are
+  unset.
 - **Audit failures:** review `npm audit` output. Moderate+ advisories must be
   resolved or explicitly acknowledged.

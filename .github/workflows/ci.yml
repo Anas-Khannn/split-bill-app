@@ -44,6 +44,9 @@ jobs:
       DATABASE_URL: postgresql://ci_test:ci_test_password@localhost:5432/ci_test_db
       JWT_SECRET: ci-test-jwt-secret-that-is-long-enough-for-validation
       REDIS_URL: redis://localhost:6379
+      RUN_INTEGRATION_TESTS: "true"
+      TEST_DATABASE_URL: postgresql://ci_test:ci_test_password@localhost:5432/ci_test_db
+      TEST_REDIS_URL: redis://localhost:6379/15
 
     steps:
       - name: Checkout repository
@@ -87,6 +90,10 @@ jobs:
       - name: Apply database migrations
         working-directory: backend
         run: npm run db:migrate
+
+      - name: Integration tests (real PostgreSQL & Redis)
+        working-directory: backend
+        run: npm run test:integration
 
       - name: Security audit
         working-directory: backend
