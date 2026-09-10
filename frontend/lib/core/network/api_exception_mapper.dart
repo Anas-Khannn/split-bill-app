@@ -17,7 +17,7 @@ AppFailure mapApiException(Object error, [StackTrace? stackTrace]) {
       return switch (statusCode) {
         400 || 409 || 422 => _validationFrom(error),
         401 => const UnauthorizedFailure(),
-        403 => const UnauthorizedFailure(),
+        403 => ForbiddenFailure(_messageFrom(error)),
         404 => const NotFoundFailure(),
         429 => const ServerFailure(
           'Too many requests. Please try again later.',

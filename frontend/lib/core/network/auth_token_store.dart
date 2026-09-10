@@ -1,34 +1,39 @@
-import '../storage/local_storage.dart';
+import '../storage/secure_storage.dart';
 
-/// Persisted authentication tokens.
-///
-/// Access and refresh tokens are opaque credentials and are stored behind the
-/// [LocalStorage] abstraction so the plugin can later be swapped for a secure
-/// enclosure (e.g. flutter_secure_storage) with no call-site changes. Tokens
-/// are never logged.
+/// Persisted authentication tokens stored behind the platform keychain
+/// via [SecureStorage]. All reads are asynchronous because the underlying
+/// keychain access may require OS interaction on first read.
 class AuthTokenStore {
   AuthTokenStore(this._storage);
 
   static const String accessTokenKey = 'auth_access_token';
   static const String refreshTokenKey = 'auth_refresh_token';
 
-  final LocalStorage _storage;
+  final SecureStorage _storage;
 
-  String? get accessToken => _storage.getString(accessTokenKey);
+  Future<String?> readAccessToken() => _storage.getString(accessTokenKey);
 
-  String? get refreshToken => _storage.getString(refreshTokenKey);
+  Future<String?> readRefreshToken() => _storage.getString(refreshTokenKey);
 
-  bool get hasSession =>
-      accessToken != null && accessToken!.isNotEmpty &&
-      refreshToken != null &&
-      refreshToken!.isNotEmpty;
+  Future<bool> hasSession() async {
+    final access = await readAccessToken();
+    final refresh = await readRefreshToken();
+    return access != null &&
+        access.isNotEmpty &&
+        refresh != null &&
+        refresh.isNotEmpty;
+  }
 
-  /// Whether a previously stored session exists (used for app-launch restore
-  /// before deciding where to send the user).
-  bool get hasStoredSession =>
-      accessToken != null || refreshToken != null;
+  Future<bool> hasStoredSession() async {
+    final access = await readAccessToken();
+    final refresh = await readRefreshToken();
+    return access != null || refresh != null;
+  }
 
-  Future<void> saveSession({required String accessToken, required String refreshToken}) async {
+  Future<void> saveSession({
+    required String accessToken,
+    required String refreshToken,
+  }) async {
     await _storage.setString(accessTokenKey, accessToken);
     await _storage.setString(refreshTokenKey, refreshToken);
   }

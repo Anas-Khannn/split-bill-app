@@ -6,6 +6,7 @@ import 'package:split_bill_app/app/app.dart';
 import 'package:split_bill_app/app/di/injection.dart';
 import 'package:split_bill_app/app/router/app_router.dart';
 import 'package:split_bill_app/core/network/api_client.dart';
+import 'package:split_bill_app/core/storage/secure_storage.dart';
 
 import '../helpers/fake_http_adapter.dart';
 
@@ -99,6 +100,7 @@ void main() {
     dio.httpClientAdapter = FakeHttpAdapter(scriptedBackend());
     await configureDependencies(
       apiClient: ApiClient(baseUrl: 'http://test.local', dio: dio),
+      secureStorage: InMemorySecureStorage(),
     );
   });
 

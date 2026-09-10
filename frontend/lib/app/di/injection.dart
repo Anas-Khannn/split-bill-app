@@ -5,6 +5,7 @@ import '../../core/config/app_config.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/auth_token_store.dart';
 import '../../core/storage/local_storage.dart';
+import '../../core/storage/secure_storage.dart';
 import '../../features/activity/data/datasources/activity_remote_data_source.dart';
 import '../../features/activity/data/repositories/activity_repository.dart';
 import '../../features/auth/data/datasources/auth_remote_data_source.dart';
@@ -28,15 +29,16 @@ bool isRegistered<T extends Object>() => getIt.isRegistered<T>();
 /// (and in widget tests) before building the widget tree.
 ///
 /// [apiClient] is injectable so tests can substitute a client with a fake
-/// HTTP adapter without touching production wiring.
-Future<void> configureDependencies({ApiClient? apiClient}) async {
+/// HTTP adapter without touching production wiring. [secureStorage] is
+/// injectable so widget tests can avoid the native keychain plugin.
+Future<void> configureDependencies({ApiClient? apiClient, SecureStorage? secureStorage}) async {
   if (getIt.isRegistered<LocalStorage>()) return;
 
   final prefs = await SharedPreferences.getInstance();
   final localStorage = LocalStorage(prefs);
   getIt.registerLazySingleton<LocalStorage>(() => localStorage);
 
-  final tokenStore = AuthTokenStore(localStorage);
+  final tokenStore = AuthTokenStore(secureStorage ?? FlutterSecureStorageImpl());
   getIt.registerLazySingleton<AuthTokenStore>(() => tokenStore);
 
   getIt.registerLazySingleton<ApiClient>(

@@ -1553,6 +1553,11 @@ docker compose up -d --build
 The API server will be available at `http://localhost:3000` and the health
 endpoint at `http://localhost:3000/health`.
 
+For a **reference production topology** (API + worker + PostgreSQL + Redis with
+health checks and restart policies) see `docker-compose.prod.yml` at the
+repository root. It is an example to adapt — fill `.env.prod` with real secrets,
+and prefer managed databases/Redis where available.
+
 ### Production Environment Variables
 
 Supply these via your hosting platform's secret/environment mechanism:
@@ -1636,12 +1641,85 @@ curl -w "%{http_code}" -o /dev/null https://your-domain/api/v1/auth/me
    automatically. Use point-in-time recovery from your database provider's
    backups.
 
+### Logging & Log Retention
+
+Logs are structured JSON written to **stdout** (`src/utils/logger.ts`). In
+Docker, capture them with `docker compose logs` or forward stdout to your
+platform's log aggregator (CloudWatch, Loki, Datadog, ...) via the container /
+host log driver.
+
+- Every HTTP request produces one request-completion log line with
+  `requestId`, `method`, `path`, `route`, `statusCode`, and `durationMs`
+  (see [Request Tracing](#request-tracing)). Use the response's `X-Request-Id`
+  header to correlate a report back to its exact log line.
+- Worker logs carry the enqueuing request's `requestId`, so a background job
+  can be traced to the HTTP call that queued it.
+- **Never logged:** passwords, tokens, refresh tokens, Authorization headers,
+  cookies, request/response bodies, database credentials, Redis connection
+  strings, or cached payloads (group names/member emails).
+- **Retention:** keep at least 30 days online for incident triage, and archive
+  longer if your compliance posture requires it. Centralized logs must be a
+  single durable sink — container stdout alone is ephemeral.
+- Container restart policies (`restart: unless-stopped`) and orchestration
+  health checks keep logs continuous; if a process crashes, the final error
+  line includes the fatal exception reason.
+
+### Database Backups & Restore
+
+PostgreSQL is the only durable store. Redis is a **disposable performance
+layer** — cache entries, rate-limit counters, and job-queue state are all TTL
+or lease bound, so losing it requires no restore, only reconnect.
+
+- **Scheduled backups:** use your provider's managed backups, or run `pg_dump`
+  on a cron as the smallest reliable baseline:
+  ```bash
+  pg_dump "$DATABASE_URL" --format=plain --file=hisab_$(date +%F).sql
+  ```
+- **Point-in-time recovery (PITR):** enable it with a managed provider
+  (Neon/Supabase/RDS) for the ability to restore to just before an incident.
+- **Test restores regularly.** A backup that has never been restored is not a
+  backup. Practice the restore into a scratch database at least quarterly:
+  ```bash
+  psql "$DATABASE_URL" --file=hisab_YYYY-MM-DD.sql
+  ```
+- **Restore procedure:** stop the API/worker (prevent writes), restore into a
+  fresh database, verify with `GET /health/ready`, then start the API/worker.
+  Never restore over a live database without explicit sign-off.
+
+### Incident Runbook
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| `GET /health` unreachable / container unhealthy | Process crash or deploy failure | Read the last log lines (a fatal exit reason is logged), check the image tag, roll back the application image. |
+| `GET /health/ready` → 503 | PostgreSQL unreachable | Check `DATABASE_URL`, network, and credentials. Readiness recovers automatically once the DB responds. |
+| HTTP 500 with an `X-Request-Id` | Application bug and/or data anomaly | Pull logs for that `requestId`; deploy a fix, do not retry blindly. 500s never leak stack traces. |
+| Process exits with code 1 | `uncaughtException` / `unhandledRejection` | Every fatal handler logs the error before exiting; the orchestrator restarts. Investigate the logged cause, fix, redeploy. |
+| Unexpected 429s | Rate-limit tuning too aggressive | Raise `RATE_LIMIT_MAX` / `AUTH_RATE_LIMIT_MAX`; verify `TRUST_PROXY` so real client IPs (not the proxy) are counted. |
+| Redis connection warnings | Redis down | Expected, non-fatal for the API: in-memory rate limiting, uncoordinated locks, cache misses. The **worker is fatal**, however — restart Redis promptly. |
+| Summaries stale / recompute jobs not running | Worker down or Redis down | Worker fails fast at startup on DB/Redis outage; restart it. Queued jobs retry with exponential backoff within the attempt budget; drained after that. |
+| `npm audit` fails in CI | Moderate+ vulnerability introduced | Run `npm audit` locally against the same lockfile; upgrade the vulnerable package or add an explicit `overrides` (see [Continuous Integration](#continuous-integration)). |
+| Migration failure at deploy | `prisma migrate deploy` failed | App startup fails closed (it never auto-migrates). Fix the migration, redeploy. Never `prisma db push`/`migrate dev` in production. |
+| Data corruption or bad data write | Defect or operator error | Use point-in-time recovery from your provider's backups. Never attempt an automatic DB migration rollback. |
+
+### Dependency Security
+
+`npm audit --audit-level=moderate` runs in CI and **fails the pipeline** on any
+moderate-or-higher advisory. Remediation policy:
+
+- Prefer upgrading the affected package to a patched release.
+- When no patched release exists, pin an explicit `overrides` entry in
+  `backend/package.json` (this exact mechanism resolved the vitest upgrade
+  advisories previously) and re-run the full test suite plus
+  `npm audit --audit-level=moderate`.
+- Never silence an audit failure without a documented override and a passing
+  suite.
+
 ### Required Production Secrets
 
 | Secret | Source |
 |---|---|
 | `DATABASE_URL` | Managed PostgreSQL provider (e.g. Neon, Supabase, RDS) |
-| `REDIS_URL` | Managed Redis provider (e.e. Upstash, ElastiCache, Redis Cloud) |
+| `REDIS_URL` | Managed Redis provider (e.g. Upstash, ElastiCache, Redis Cloud) |
 | `JWT_SECRET` | Generated randomly, stored in hosting platform secrets |
 
 ### Troubleshooting
@@ -1923,6 +2001,8 @@ every pull request and push to `master`.
 | Integration tests | `npm run test:integration` | Test failures (runs after migrations, against real Postgres + Redis) |
 | Security audit | `npm audit --audit-level=moderate` | Moderate+ vulnerabilities |
 | Production build | `npm run build` | Compilation errors |
+| Flutter analyze (mobile job) | `flutter analyze` | Analyzer issues (Dart) |
+| Flutter tests (mobile job) | `flutter test` | Test failures (Dart) |
 
 ### Infrastructure services
 
@@ -1934,6 +2014,12 @@ integration suites **opt in** via the CI job environment
 (`RUN_INTEGRATION_TESTS=true`, `TEST_DATABASE_URL`, `TEST_REDIS_URL`); failing
 integration tests fail the pipeline. The unit suite (`npm test`) remains
 hermetic and never touches real services.
+
+The pipeline also runs an independent **mobile job** for the Flutter frontend
+(`frontend/`): it caches pub dependencies, runs `flutter analyze` with no
+warnings allowed, and runs the Dart test suite with `flutter test` (this
+includes the widget smoke test and the app's unit/contract tests — no
+emulator is required).
 
 ### Running integration tests locally
 

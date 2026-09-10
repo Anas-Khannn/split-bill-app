@@ -94,8 +94,8 @@ class ApiClient {
     }
   }
 
-  void _onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    final token = _tokenStore?.accessToken;
+  void _onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
+    final token = await _tokenStore?.readAccessToken();
     if (token != null && token.isNotEmpty && !_unauthenticatedAuthPaths.contains(options.path)) {
       options.headers['Authorization'] = 'Bearer $token';
     }
