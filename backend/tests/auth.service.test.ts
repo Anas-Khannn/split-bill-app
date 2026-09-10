@@ -13,15 +13,17 @@ vi.mock("../src/modules/auth/auth.repository.js", async () => {
   );
   return {
     ...actual,
-    AuthRepository: vi.fn(() => ({
-      findByEmail: vi.fn(),
-      findById: vi.fn(),
-      create: vi.fn(),
-      findRefreshTokenByHash: vi.fn(),
-      createRefreshToken: vi.fn(),
-      revokeRefreshTokenById: vi.fn(),
-      rotateRefreshToken: vi.fn(),
-    })),
+    AuthRepository: vi.fn(function () {
+      return {
+        findByEmail: vi.fn(),
+        findById: vi.fn(),
+        create: vi.fn(),
+        findRefreshTokenByHash: vi.fn(),
+        createRefreshToken: vi.fn(),
+        revokeRefreshTokenById: vi.fn(),
+        rotateRefreshToken: vi.fn(),
+      };
+    }),
   };
 });
 

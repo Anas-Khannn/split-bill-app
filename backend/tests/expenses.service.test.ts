@@ -12,13 +12,15 @@ vi.mock("../src/modules/expenses/expense.repository.js", async () => {
   >("../src/modules/expenses/expense.repository.js");
   return {
     ...actual,
-    ExpenseRepository: vi.fn(() => ({
-      findGroupById: vi.fn(),
-      findGroupMemberIds: vi.fn(),
-      createExpenseWithSplits: vi.fn(),
-      findExpenseById: vi.fn(),
-      findExpensesByGroupId: vi.fn(),
-    })),
+    ExpenseRepository: vi.fn(function () {
+      return {
+        findGroupById: vi.fn(),
+        findGroupMemberIds: vi.fn(),
+        createExpenseWithSplits: vi.fn(),
+        findExpenseById: vi.fn(),
+        findExpensesByGroupId: vi.fn(),
+      };
+    }),
   };
 });
 
