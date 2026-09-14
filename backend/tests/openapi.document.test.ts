@@ -17,6 +17,10 @@ const EXPECTED_PATHS = [
   "/api/v1/auth/login",
   "/api/v1/auth/refresh",
   "/api/v1/auth/logout",
+  "/api/v1/auth/verify-email",
+  "/api/v1/auth/resend-verification",
+  "/api/v1/auth/forgot-password",
+  "/api/v1/auth/reset-password",
   "/api/v1/auth/me",
   "/api/v1/groups",
   "/api/v1/groups/{id}",
@@ -40,6 +44,10 @@ const PUBLIC_OPERATION_IDS = [
   "loginUser",
   "refreshSession",
   "logoutUser",
+  "verifyEmailAddress",
+  "resendVerificationEmail",
+  "requestPasswordReset",
+  "resetUserPassword",
 ];
 
 const IMPORTANT_SCHEMAS = [
@@ -48,6 +56,10 @@ const IMPORTANT_SCHEMAS = [
   "MinorUnits",
   "User",
   "AuthSession",
+  "UpdateCurrentUserRequest",
+  "VerifyEmailRequest",
+  "EmailRequest",
+  "ResetPasswordRequest",
   "Group",
   "GroupWithMemberCount",
   "GroupWithMembers",
@@ -56,6 +68,7 @@ const IMPORTANT_SCHEMAS = [
   "Expense",
   "ExpenseSummary",
   "CreateExpenseRequest",
+  "UpdateExpenseRequest",
   "Settlement",
   "CreateSettlementRequest",
   "Balance",
@@ -66,9 +79,7 @@ const IMPORTANT_SCHEMAS = [
   "ErrorBody",
 ];
 
-function operations(
-  document: OpenApiDocument,
-): Array<{ operationId: string; operation: OperationObject }> {
+function operations(document: OpenApiDocument): Array<{ operationId: string; operation: OperationObject }> {
   const result: Array<{ operationId: string; operation: OperationObject }> = [];
   for (const pathItem of Object.values(document.paths)) {
     for (const method of ["get", "post", "put", "delete", "patch"] as const) {
@@ -147,8 +158,7 @@ describe("OpenAPI document", () => {
         expect(operation.security, `${operationId} must be public`).toEqual([]);
       } else {
         expect(
-          operation.security === undefined ||
-            operation.security.every((req) => "bearerAuth" in req),
+          operation.security === undefined || operation.security.every((req) => "bearerAuth" in req),
           `${operationId} must require bearerAuth`,
         ).toBe(true);
       }
@@ -174,14 +184,9 @@ describe("OpenAPI document", () => {
 
     for (const { operationId, operation } of allOperations) {
       expect(operation.tags?.length, `${operationId} must declare a tag`).toBeGreaterThan(0);
-      expect(
-        Object.keys(operation.responses).length,
-        `${operationId} must declare responses`,
-      ).toBeGreaterThan(0);
+      expect(Object.keys(operation.responses).length, `${operationId} must declare responses`).toBeGreaterThan(0);
       for (const status of Object.keys(operation.responses)) {
-        expect(status, `${operationId} response ${status} must be a numeric status`).toMatch(
-          /^\d{3}$/,
-        );
+        expect(status, `${operationId} response ${status} must be a numeric status`).toMatch(/^\d{3}$/);
       }
     }
   });
@@ -249,7 +254,7 @@ describe("OpenAPI document", () => {
 
 describe("Path item structure", () => {
   it("declares only the HTTP methods the backend implements", () => {
-    const allowedMethods = new Set(["get", "post", "put", "delete"]);
+    const allowedMethods = new Set(["get", "post", "put", "delete", "patch"]);
     for (const item of Object.values(document.paths)) {
       const methods = (Object.keys(item) as Array<keyof PathItemObject>).filter(
         (key) => key !== "summary" && key !== "description" && key !== "parameters",

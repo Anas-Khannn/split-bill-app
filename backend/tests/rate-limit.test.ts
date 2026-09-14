@@ -92,7 +92,9 @@ describe("Rate limiting", () => {
     const app = createApp();
 
     expect((await request(app).get("/health")).status).toBe(HTTP_STATUSES.OK);
-    expect((await request(app).get("/health")).status).toBe(HTTP_STATUSES.TOO_MANY_REQUESTS);
+    expect((await request(app).get("/health")).status).toBe(
+      HTTP_STATUSES.TOO_MANY_REQUESTS,
+    );
 
     await new Promise((resolve) => setTimeout(resolve, 250));
 
@@ -104,8 +106,12 @@ describe("Rate limiting", () => {
     const app = createApp();
 
     // Two unauthenticated requests hit the auth limiter but stay under its cap.
-    expect((await request(app).get("/api/v1/auth/me")).status).toBe(HTTP_STATUSES.UNAUTHORIZED);
-    expect((await request(app).get("/api/v1/auth/me")).status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+    expect((await request(app).get("/api/v1/auth/me")).status).toBe(
+      HTTP_STATUSES.UNAUTHORIZED,
+    );
+    expect((await request(app).get("/api/v1/auth/me")).status).toBe(
+      HTTP_STATUSES.UNAUTHORIZED,
+    );
 
     // The third request exceeds the auth limit → 429 instead of 401.
     const blocked = await request(app).get("/api/v1/auth/me");
