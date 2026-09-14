@@ -53,17 +53,13 @@ describe("GroupService", () => {
       const service = makeService();
       const result = await service.createGroup("owner-1", { name: "Trip to Naran" });
 
-      expect(repository.createGroupWithOwner).toHaveBeenCalledWith(
-        "owner-1",
-        {
-          name: "Trip to Naran",
-        },
-        expect.objectContaining({
-          userId: "owner-1",
-          type: "GROUP_CREATED",
-          message: "created the group",
-        }),
-      );
+      expect(repository.createGroupWithOwner).toHaveBeenCalledWith("owner-1", {
+        name: "Trip to Naran",
+      }, expect.objectContaining({
+        userId: "owner-1",
+        type: "GROUP_CREATED",
+        message: "created the group",
+      }));
       expect(result).toEqual({
         id: group.id,
         name: group.name,
@@ -167,7 +163,14 @@ describe("GroupService", () => {
       const service = makeService();
       const result = await service.updateGroup("owner-1", "group-1", { name: "Updated Name" });
 
-      expect(repository.updateGroup).toHaveBeenCalledWith("group-1", { name: "Updated Name" });
+      const [groupId, data, activity] = repository.updateGroup.mock.calls[0];
+      expect(groupId).toBe("group-1");
+      expect(data).toEqual({ name: "Updated Name" });
+      expect(activity).toMatchObject({
+        userId: "owner-1",
+        type: "GROUP_UPDATED",
+        message: `renamed the group to "Updated Name"`,
+      });
       expect(result).toMatchObject({ id: "group-1", name: "Updated Name" });
     });
 
@@ -311,12 +314,24 @@ describe("GroupService", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       });
+      repository.findUserById.mockResolvedValue({
+        id: "u2",
+        name: "Second User",
+        email: "u2@example.com",
+      });
       repository.removeGroupMember.mockResolvedValue();
 
       const service = makeService();
       await service.removeGroupMember("owner-1", "group-1", "u2");
 
-      expect(repository.removeGroupMember).toHaveBeenCalledWith("group-1", "u2");
+      const [groupId, memberId, activity] = repository.removeGroupMember.mock.calls[0];
+      expect(groupId).toBe("group-1");
+      expect(memberId).toBe("u2");
+      expect(activity).toMatchObject({
+        userId: "owner-1",
+        type: "MEMBER_REMOVED",
+        message: "removed Second User from the group",
+      });
     });
 
     it("should throw FORBIDDEN when the requester is not the owner", async () => {

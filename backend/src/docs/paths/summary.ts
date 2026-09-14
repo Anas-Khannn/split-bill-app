@@ -36,10 +36,11 @@ const summaryPaths: Record<string, PathItemObject> = {
       operationId: "getGroupSummary",
       parameters: [groupIdPathParameter],
       responses: {
-        200: jsonResponse("The latest summary snapshot.", summaryData(), {
-          success: true,
-          data: { summary: summaryExample },
-        }),
+        200: jsonResponse(
+          "The latest summary snapshot.",
+          summaryData(),
+          { success: true, data: { summary: summaryExample } },
+        ),
         401: componentResponse("Unauthorized"),
         403: componentResponse("Forbidden"),
         404: componentResponse("NotFound"),

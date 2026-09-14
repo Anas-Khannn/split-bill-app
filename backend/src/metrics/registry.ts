@@ -44,6 +44,8 @@ export const METRIC = {
   usersRegisteredTotal: "users_registered_total",
   groupsCreatedTotal: "groups_created_total",
   expensesCreatedTotal: "expenses_created_total",
+  expensesUpdatedTotal: "expenses_updated_total",
+  expensesDeletedTotal: "expenses_deleted_total",
   settlementsCreatedTotal: "settlements_created_total",
   activityEventsCreatedTotal: "activity_events_created_total",
   backgroundJobsSucceededTotal: "background_jobs_succeeded_total",
@@ -54,6 +56,8 @@ export const METRIC = {
   cacheFailuresTotal: "cache_failures_total",
   queueFailuresTotal: "queue_failures_total",
   databaseConnectionErrorsTotal: "database_connection_errors_total",
+  emailsSentTotal: "emails_sent_total",
+  emailSendFailuresTotal: "email_send_failures_total",
 } as const;
 
 export type MetricName = (typeof METRIC)[keyof typeof METRIC];
@@ -68,9 +72,7 @@ export const METRIC_LABEL = {
   activityType: "type",
 } as const;
 
-const DEFAULT_HISTOGRAM_BUCKETS = [
-  0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
-] as const;
+const DEFAULT_HISTOGRAM_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10] as const;
 
 const METRIC_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -212,7 +214,9 @@ export class MetricsRegistry {
 
     for (const def of this.defs.values()) {
       lines.push(`# HELP ${def.name} ${def.help}`);
-      lines.push(`# TYPE ${def.name} ${def.kind === "counter" ? "counter" : "histogram"}`);
+      lines.push(
+        `# TYPE ${def.name} ${def.kind === "counter" ? "counter" : "histogram"}`,
+      );
 
       if (def.kind === "counter") {
         const series = this.counters.get(def.name);
@@ -224,7 +228,7 @@ export class MetricsRegistry {
         const buckets = def.buckets ?? DEFAULT_BUCKETS;
         const series = this.histograms.get(def.name);
         if (!series) continue;
-        for (const [keys, entry] of series) {
+for (const [keys, entry] of series) {
           let cumulative = 0;
           for (let i = 0; i < buckets.length; i += 1) {
             const bucket = buckets[i];
@@ -313,6 +317,16 @@ const DEFAULT_METRICS: MetricDefinition[] = [
   },
   {
     kind: "counter",
+    name: METRIC.expensesUpdatedTotal,
+    help: "Total number of successfully updated expenses.",
+  },
+  {
+    kind: "counter",
+    name: METRIC.expensesDeletedTotal,
+    help: "Total number of successfully deleted expenses.",
+  },
+  {
+    kind: "counter",
     name: METRIC.settlementsCreatedTotal,
     help: "Total number of successfully created settlements.",
   },
@@ -366,6 +380,18 @@ const DEFAULT_METRICS: MetricDefinition[] = [
     kind: "counter",
     name: METRIC.databaseConnectionErrorsTotal,
     help: "Total number of PostgreSQL connection failures at startup.",
+  },
+  {
+    kind: "counter",
+    name: METRIC.emailsSentTotal,
+    help: "Total number of transactional auth emails successfully dispatched, by bounded operation name.",
+    labelKeys: [METRIC_LABEL.operation],
+  },
+  {
+    kind: "counter",
+    name: METRIC.emailSendFailuresTotal,
+    help: "Total number of transactional auth email dispatch failures, by bounded operation name.",
+    labelKeys: [METRIC_LABEL.operation],
   },
 ];
 

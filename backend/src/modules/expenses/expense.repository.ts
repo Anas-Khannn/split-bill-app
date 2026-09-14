@@ -1,6 +1,9 @@
 import type { Expense, ExpenseSplit, Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
-import { createActivityEvent, type ActivityEventInput } from "../activity/activity.repository.js";
+import {
+  createActivityEvent,
+  type ActivityEventInput,
+} from "../activity/activity.repository.js";
 
 export interface ExpenseCreateSplit {
   userId: string;
@@ -120,6 +123,87 @@ export class ExpenseRepository {
           orderBy: { createdAt: "asc" },
         },
       },
+    });
+  }
+
+  /**
+   * Updates an expense and atomically replaces its splits and the
+   * expense-updated activity event. The split rows are removed and recreated
+   * inside the same transaction (old split ids are not reused), so the
+   * persisted split set always matches the merged inputs or nothing changes.
+   */
+  async updateExpenseWithSplits(
+    expenseId: string,
+    data: {
+      paidById: string;
+      description: string;
+      amountMinorUnits: bigint;
+      splitType: "EQUAL" | "EXACT";
+      expenseDate: Date;
+      splits: ExpenseCreateSplit[];
+    },
+    activity: ActivityEventInput,
+  ): Promise<ExpenseWithDetails> {
+    return prisma.$transaction(async (tx) => {
+      const occurredAt = new Date();
+      const expense = await tx.expense.update({
+        where: { id: expenseId },
+        data: {
+          paidById: data.paidById,
+          description: data.description,
+          amountMinorUnits: data.amountMinorUnits,
+          splitType: data.splitType,
+          expenseDate: data.expenseDate,
+          splits: {
+            deleteMany: {},
+            create: data.splits.map((split) => ({
+              userId: split.userId,
+              amountMinorUnits: split.amountMinorUnits,
+            })),
+          },
+        },
+        include: {
+          payer: { select: safeUserSelect },
+          splits: {
+            include: { user: { select: safeUserSelect } },
+          },
+        },
+      });
+
+      await createActivityEvent(tx, {
+        groupId: expense.groupId,
+        userId: activity.userId,
+        type: activity.type,
+        message: activity.message,
+        amountMinorUnits: expense.amountMinorUnits,
+        currencyCode: expense.currencyCode,
+        occurredAt,
+      });
+
+      return expense;
+    });
+  }
+
+  /**
+   * Deletes an expense (its splits cascade) and records the expense-deleted
+   * activity event atomically. The event carries the amount and currency of
+   * the deleted expense so the feed remains a faithful audit trail.
+   */
+  async deleteExpenseWithEvent(expenseId: string, activity: ActivityEventInput): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      const expense = await tx.expense.delete({
+        where: { id: expenseId },
+      });
+
+      await createActivityEvent(tx, {
+        groupId: expense.groupId,
+        userId: activity.userId,
+        type: activity.type,
+        message: activity.message,
+        amountMinorUnits: expense.amountMinorUnits,
+        currencyCode: expense.currencyCode,
+        occurredAt: new Date(),
+      });
     });
   }
 

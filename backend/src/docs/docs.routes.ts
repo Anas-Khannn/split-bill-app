@@ -72,9 +72,6 @@ docsRoutes.get("/swagger-initializer.js", (_req, res) => {
 });
 
 /** Local Swagger UI assets (bundle, preset, stylesheet, favicons). */
-docsRoutes.use(
-  "/assets",
-  express.static(SWAGGER_UI_DIST_PATH, { index: false, dotfiles: "ignore" }),
-);
+docsRoutes.use("/assets", express.static(SWAGGER_UI_DIST_PATH, { index: false, dotfiles: "ignore" }));
 
 export default docsRoutes;
