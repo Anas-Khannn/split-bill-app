@@ -53,7 +53,9 @@ function resolveStore(
   prefix: string,
   windowMs: number,
 ): Store | undefined {
-  return redis === undefined ? undefined : new RedisRateLimitStore({ redis, prefix, windowMs });
+  return redis === undefined
+    ? undefined
+    : new RedisRateLimitStore({ redis, prefix, windowMs });
 }
 
 /**
@@ -74,4 +76,17 @@ export function authLimiter(redis?: RedisLike): RequestHandler {
   const env = loadEnv();
   const store = resolveStore(redis, "rl:auth:", env.RATE_LIMIT_WINDOW_MS);
   return createLimiter(env.AUTH_RATE_LIMIT_MAX, env.RATE_LIMIT_WINDOW_MS, { store });
+}
+
+/**
+ * Sensitive auth limiter. Applied to the public verification / password-recovery
+ * endpoints (verify-email, resend-verification, forgot-password, reset-password),
+ * which accept unauthenticated email-or-token input and are therefore the
+ * cheapest targets for enumeration or abuse. Their budget is far tighter than
+ * the general auth limiter's.
+ */
+export function sensitiveEmailAuthLimiter(redis?: RedisLike): RequestHandler {
+  const env = loadEnv();
+  const store = resolveStore(redis, "rl:auth-email:", env.RATE_LIMIT_WINDOW_MS);
+  return createLimiter(env.AUTH_EMAIL_RATE_LIMIT_MAX, env.RATE_LIMIT_WINDOW_MS, { store });
 }
