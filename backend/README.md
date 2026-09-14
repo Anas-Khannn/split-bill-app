@@ -214,9 +214,9 @@ at the same database/Redis:
 |---|---|
 | Development / production server & worker | `DATABASE_URL`, `REDIS_URL`, and app settings (below) |
 | Unit tests (`npm test`) | Fully hermetic — hardcoded mock credentials in `tests/setup.ts`; no real services touched |
-| Integration tests (`npm run test:integration`) | Must opt in with `RUN_INTEGRATION_TESTS=true` plus `TEST_DATABASE_URL` (and optionally `TEST_REDIS_URL`) |
+| Integration tests (`npm run test:integration`) | Opt in via `INTEGRATION_DATABASE_URL`/`INTEGRATION_REDIS_URL` (defaults point at the docker-compose services on ports 5433/6380) |
 | Prisma CLI (`db:migrate`, `db:studio`, `db:validate`) | Reads `DATABASE_URL` (and a working `NODE_ENV`) |
-| CI | Provisions its own Postgres 16 + Redis 7 containers and sets the `TEST_*` variables (see [Continuous Integration](#continuous-integration)) |
+| CI | Provisions its own Postgres 16 + Redis 7 containers and sets the `INTEGRATION_DATABASE_URL`/`INTEGRATION_REDIS_URL` variables (see [Continuous Integration](#continuous-integration)) |
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -231,9 +231,6 @@ at the same database/Redis:
 | `RATE_LIMIT_MAX` | No | `100` | Max requests per client IP per window for non-auth endpoints |
 | `AUTH_RATE_LIMIT_MAX` | No | `20` | Max requests per client IP per window for `/api/v1/auth/*` |
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string for distributed rate limiting/locking. Never commit one containing a password. |
-| `RUN_INTEGRATION_TESTS` | No | — | Set to `true` to enable the real-infrastructure integration suites. Required only when running `npm run test:integration`; must be a deliberate opt-in. |
-| `TEST_DATABASE_URL` | No | — | Dedicated PostgreSQL connection string for the integration suites. Never point it at development/production data; the suites refuse to run without it. |
-| `TEST_REDIS_URL` | No | `redis://localhost:6379/15` | Dedicated Redis connection string for the integration suites. Defaults to logical database 15 so a dev server's keyspace is never touched. |
 | `TRUST_PROXY` | No | `false` | Reverse-proxy trust level for `req.ip`. Use `true`/`1` (first hop), a hop count, or an Express value (`loopback`, subnet, ...). Leave `false` when no proxy is deployed. |
 | `INTEGRATION_DATABASE_URL` | No | `postgresql://splitease:splitease_test@localhost:5433/splitease_integration` | PostgreSQL connection string used by the integration test suite (see [Integration Testing](#integration-testing-real-postgresql--redis)). |
 | `INTEGRATION_REDIS_URL` | No | `redis://localhost:6380/15` | Redis connection string used by the integration test suite (db index 15). |
@@ -279,7 +276,6 @@ npm run build            # Compile TypeScript to dist/
 npm start                # Run compiled server from dist/
 npm run start:worker     # Run compiled worker from dist/
 npm test                 # Run unit/api test suite (Vitest, hermetic — no live services)
-npm run test:integration # Run integration suites against a real PostgreSQL + Redis (see "Continuous Integration")
 npm run test:watch       # Run tests in watch mode
 npm run test:coverage    # Run tests with coverage
 npm run lint             # Run ESLint
@@ -583,9 +579,9 @@ the narrow `RedisLike` contract in `src/redis/redisClient.ts` (a single lazy
 ioredis client, created with `enableOfflineQueue: false` so commands fail fast
 instead of queueing), so tests can inject an in-memory fake — the unit test suite runs without a live
 Redis server. Real-Redis behavior is additionally verified by the integration
-suites under `tests/integration/` (`npm run test:integration`), which opt in via
-`RUN_INTEGRATION_TESTS=true` and `TEST_REDIS_URL` (default
-`redis://localhost:6379/15`).
+suites under `tests/integration/` (`npm run test:integration`), which run against
+real PostgreSQL + Redis via `INTEGRATION_DATABASE_URL`/`INTEGRATION_REDIS_URL`
+(see [Integration Testing](#integration-testing-real-postgresql--redis)).
 
 - `connectRedis()` runs at startup and is **non-fatal for the API server**: if
   Redis is unreachable the server keeps serving with degraded behavior
@@ -2080,8 +2076,8 @@ Implemented so far (auth + groups + expenses + balances/settlements + activity f
   Redis errors
 - Two test tiers: **unit/api tests** (`npm test`, hermetic, mocked Prisma/Redis —
   passing without a live DB) and **integration tests**
-  (`npm run test:integration`, real PostgreSQL + Redis, opt-in via
-  `RUN_INTEGRATION_TESTS` and `TEST_DATABASE_URL`)
+  (`npm run test:integration`, real PostgreSQL + Redis via
+  `INTEGRATION_DATABASE_URL`/`INTEGRATION_REDIS_URL`)
 - **OpenAPI documentation** (`src/docs/`) — a typed, modular OpenAPI 3.0.3 spec
   served as self-hosted interactive Swagger UI at `GET /api/docs` and raw JSON at
   `GET /api/docs/openapi.json`, with tests asserting documented routes exist,
@@ -2227,35 +2223,33 @@ every pull request and push to `master`.
 
 ### Infrastructure services
 
-CI spins up disposable PostgreSQL 16 and Redis 7 containers. After migrations
-are applied, the **integration suites** (`npm run test:integration`) run against
-these containers — they exercise real transactions/constraints/rollback,
-distributed locking, Redis-backed rate limiting, and the cache store. The
-integration suites **opt in** via the CI job environment
-(`RUN_INTEGRATION_TESTS=true`, `TEST_DATABASE_URL`, `TEST_REDIS_URL`); failing
-integration tests fail the pipeline. The unit suite (`npm test`) remains
-hermetic and never touches real services.
+CI spins up disposable PostgreSQL 16 and Redis 7 containers (mapped to
+localhost:5433 and localhost:6380 respectively). The `DATABASE_URL` is set to the
+container's integration Postgres. After migrations, the **integration suites**
+(`npm run test:integration`) run against these containers — they exercise real
+transactions/constraints/rollback, distributed locking, Redis-backed rate
+limiting, and the cache store. The unit suite (`npm test`) remains hermetic and
+never touches real services.
 
 ### Running integration tests locally
 
 ```bash
 cd backend
+npm run integration:up   # start Postgres 5433 + Redis 6380 via docker-compose
+npm run db:migrate:test  # apply pending migrations to the integration database
 npm run test:integration
 ```
 
-This requires opt-in (a deliberate decision) and a dedicated PostgreSQL:
+If you prefer to bring up your own infrastructure, set the following env vars
+before running `npm run test:integration`:
 
-```bash
-RUN_INTEGRATION_TESTS=true \
-TEST_DATABASE_URL=postgresql://user:password@localhost:5432/hisab_kitab_test \
-npm run test:integration
-```
+- `INTEGRATION_DATABASE_URL` — must target a dedicated PostgreSQL database
+  (default `postgresql://splitease:splitease_test@localhost:5433/splitease_integration`)
+- `INTEGRATION_REDIS_URL` — (default `redis://localhost:6380/15`)
 
-`TEST_REDIS_URL` defaults to `redis://localhost:6379/15`; if your local Redis is
-elsewhere, set it explicitly. The suites skip (report skipped, never silently
-pass) when opt-in or `TEST_DATABASE_URL` is missing, so an accidental run cannot
-execute destructive statements against development data. Migrations/tables in
-the test database must be up to date before running (`npm run db:migrate`).
+The suites refuse to run if `INTEGRATION_DATABASE_URL` is missing, so an
+accidental invocation cannot touch development data. Migrations/tables in the
+integration database must be up to date before running (`npm run db:migrate:test`).
 
 ### When CI runs
 
@@ -2284,8 +2278,7 @@ npm run build
 - **Type errors:** run `npm run typecheck` and fix the reported issues.
 - **Test failures:** run `npm test` locally to reproduce. Unit/api tests use
   mocked Prisma/Redis — no external services are required. Integration-suite
-  failures require real services: set `RUN_INTEGRATION_TESTS=true` and
-  `TEST_DATABASE_URL` (see above), and note the suites skip when those are
-  unset.
+  failures require real services: bring up the containers (`npm run integration:up`),
+  migrate (`npm run db:migrate:test`), and run `npm run test:integration`.
 - **Audit failures:** review `npm audit` output. Moderate+ advisories must be
   resolved or explicitly acknowledged.

@@ -658,7 +658,7 @@ describe("Settlements API", () => {
       mockPrisma.settlement.findMany.mockResolvedValue([storedSettlement()]);
 
       const res = await request(app)
-        .get("/api/v1/groups/group-1/settlements?page=2&limit=2")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/settlements?page=2&limit=2")
         .set("Authorization", `Bearer ${signToken(aliceId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.OK);
@@ -668,7 +668,7 @@ describe("Settlements API", () => {
         expect.objectContaining({ skip: 2, take: 2 }),
       );
       expect(mockPrisma.settlement.count).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { groupId: "group-1" } }),
+        expect.objectContaining({ where: { groupId: "11111111-1111-4111-8111-111111111111" } }),
       );
     });
 
@@ -679,7 +679,7 @@ describe("Settlements API", () => {
       mockPrisma.settlement.findMany.mockResolvedValue([]);
 
       const res = await request(app)
-        .get("/api/v1/groups/group-1/settlements?page=3")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/settlements?page=3")
         .set("Authorization", `Bearer ${signToken(aliceId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.OK);
@@ -688,7 +688,7 @@ describe("Settlements API", () => {
 
     it("returns 400 for an out-of-range limit", async () => {
       const res = await request(app)
-        .get("/api/v1/groups/group-1/settlements?limit=100")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/settlements?limit=100")
         .set("Authorization", `Bearer ${signToken(aliceId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
@@ -696,7 +696,7 @@ describe("Settlements API", () => {
 
     it("returns 400 for a non-positive page", async () => {
       const res = await request(app)
-        .get("/api/v1/groups/group-1/settlements?page=0")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/settlements?page=0")
         .set("Authorization", `Bearer ${signToken(aliceId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);

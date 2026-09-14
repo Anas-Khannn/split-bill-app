@@ -348,7 +348,7 @@ describe("Expenses API", () => {
       mockPrisma.expense.findMany.mockResolvedValue([
         {
           id: "expense-1",
-          groupId: "group-1",
+          groupId: "11111111-1111-4111-8111-111111111111",
           paidById: payerId,
           description: "Dinner",
           amountMinorUnits: 1000n,
@@ -363,7 +363,7 @@ describe("Expenses API", () => {
       ]);
 
       const res = await request(app)
-        .get("/api/v1/groups/group-1/expenses?page=1&limit=2")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses?page=1&limit=2")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.OK);
@@ -373,7 +373,7 @@ describe("Expenses API", () => {
         expect.objectContaining({ skip: 0, take: 2 }),
       );
       expect(mockPrisma.expense.count).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { groupId: "group-1" } }),
+        expect.objectContaining({ where: { groupId: "11111111-1111-4111-8111-111111111111" } }),
       );
     });
 
@@ -384,7 +384,7 @@ describe("Expenses API", () => {
       mockPrisma.expense.findMany.mockResolvedValue([]);
 
       const res = await request(app)
-        .get("/api/v1/groups/group-1/expenses?page=2")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses?page=2")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.OK);
@@ -393,7 +393,7 @@ describe("Expenses API", () => {
 
     it("should return 400 for an out-of-range limit", async () => {
       const res = await request(app)
-        .get("/api/v1/groups/group-1/expenses?limit=999")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses?limit=999")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
@@ -401,7 +401,7 @@ describe("Expenses API", () => {
 
     it("should return 400 for a non-positive page", async () => {
       const res = await request(app)
-        .get("/api/v1/groups/group-1/expenses?page=0")
+        .get("/api/v1/groups/11111111-1111-4111-8111-111111111111/expenses?page=0")
         .set("Authorization", `Bearer ${signToken(ownerId)}`);
 
       expect(res.status).toBe(HTTP_STATUSES.BAD_REQUEST);
