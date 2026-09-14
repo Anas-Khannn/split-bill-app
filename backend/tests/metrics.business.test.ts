@@ -8,6 +8,8 @@ import type { IdempotencyContext } from "../src/modules/idempotency/reconcile.js
 
 import { AuthService } from "../src/modules/auth/auth.service.js";
 import type { AuthRepository } from "../src/modules/auth/auth.repository.js";
+import { EmailService } from "../src/modules/email/email.service.js";
+import type { EmailProvider } from "../src/modules/email/email.types.js";
 import { GroupService } from "../src/modules/groups/group.service.js";
 import type { GroupRepository } from "../src/modules/groups/group.repository.js";
 import { ExpenseService } from "../src/modules/expenses/expense.service.js";
@@ -34,15 +36,11 @@ describe("users_registered_total", () => {
   it("increments once when a user has registered successfully", async () => {
     const repository = {
       findByEmail: vi.fn().mockResolvedValue(null),
-      create: vi.fn().mockResolvedValue({
+      createUserWithAuthData: vi.fn().mockResolvedValue({
         id: "user-1",
         name: "Ahmed",
         email: "ahmed@example.com",
-        passwordHash: "hash",
-        createdAt: new Date(),
-        updatedAt: new Date(),
       }),
-      createRefreshToken: vi.fn().mockResolvedValue({ id: "session-1" }),
     } as unknown as AuthRepository;
 
     const service = new AuthService(repository);
@@ -62,6 +60,41 @@ describe("users_registered_total", () => {
     ).rejects.toMatchObject({ code: APP_ERRORS.EMAIL_IN_USE });
 
     expect(count(METRIC.usersRegisteredTotal)).toBe(0);
+  });
+});
+
+describe("email metrics (emails_sent_total / email_send_failures_total)", () => {
+  it("increments emails_sent_total with the operation label on success", async () => {
+    const provider = { send: vi.fn().mockResolvedValue(undefined) } as unknown as EmailProvider;
+    const service = new EmailService(provider);
+
+    await service.sendVerificationEmail("ahmed@example.com", "https://app.example/verify-email", "Ahmed");
+
+    expect(
+      metrics.counterValue(METRIC.emailsSentTotal, {
+        [METRIC_LABEL.operation]: "email_verification",
+      }),
+    ).toBe(1);
+  });
+
+  it("increments email_send_failures_total and throws EmailDeliveryError on provider failure", async () => {
+    const provider = { send: vi.fn().mockRejectedValue(new Error("smtp down")) } as unknown as EmailProvider;
+    const service = new EmailService(provider);
+
+    await expect(
+      service.sendPasswordResetEmail("ahmed@example.com", "https://app.example/reset-password", "Ahmed"),
+    ).rejects.toMatchObject({ code: APP_ERRORS.EMAIL_DELIVERY_FAILED });
+
+    expect(
+      metrics.counterValue(METRIC.emailSendFailuresTotal, {
+        [METRIC_LABEL.operation]: "password_reset",
+      }),
+    ).toBe(1);
+    expect(
+      metrics.counterValue(METRIC.emailsSentTotal, {
+        [METRIC_LABEL.operation]: "password_reset",
+      }),
+    ).toBe(0);
   });
 });
 

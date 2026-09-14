@@ -17,6 +17,10 @@ const EXPECTED_PATHS = [
   "/api/v1/auth/login",
   "/api/v1/auth/refresh",
   "/api/v1/auth/logout",
+  "/api/v1/auth/verify-email",
+  "/api/v1/auth/resend-verification",
+  "/api/v1/auth/forgot-password",
+  "/api/v1/auth/reset-password",
   "/api/v1/auth/me",
   "/api/v1/groups",
   "/api/v1/groups/{id}",
@@ -40,6 +44,10 @@ const PUBLIC_OPERATION_IDS = [
   "loginUser",
   "refreshSession",
   "logoutUser",
+  "verifyEmailAddress",
+  "resendVerificationEmail",
+  "requestPasswordReset",
+  "resetUserPassword",
 ];
 
 const IMPORTANT_SCHEMAS = [
@@ -49,6 +57,9 @@ const IMPORTANT_SCHEMAS = [
   "User",
   "AuthSession",
   "UpdateCurrentUserRequest",
+  "VerifyEmailRequest",
+  "EmailRequest",
+  "ResetPasswordRequest",
   "Group",
   "GroupWithMemberCount",
   "GroupWithMembers",

@@ -113,6 +113,50 @@ export const refreshTokenRequestSchema: SchemaObject = {
   required: ["refreshToken"],
 };
 
+export const verifyEmailRequestSchema: SchemaObject = {
+  type: "object",
+  description:
+    "Presents the single-use token from the verification email. The plaintext token is a base64url string; only its hash is stored server-side.",
+  properties: {
+    token: {
+      type: "string",
+      description: "The token from the verification email link.",
+      example: "<verification-token>",
+    },
+  },
+  required: ["token"],
+};
+
+export const emailRequestSchema: SchemaObject = {
+  type: "object",
+  description:
+    "An email address used by the email-resend and password-recovery flows. The endpoint answers generically so it never reveals whether the address belongs to an account.",
+  properties: {
+    email: { type: "string", format: "email", example: "ahmed@example.com" },
+  },
+  required: ["email"],
+};
+
+export const resetPasswordRequestSchema: SchemaObject = {
+  type: "object",
+  description:
+    "Presents the single-use token from the reset email together with the new password. A successful reset revokes every existing session.",
+  properties: {
+    token: {
+      type: "string",
+      description: "The token from the password-reset email link.",
+      example: "<reset-token>",
+    },
+    newPassword: {
+      type: "string",
+      format: "password",
+      description: "The new password. At least 8 characters, at most 72 (bcrypt limit).",
+      example: "a-new-secure-password",
+    },
+  },
+  required: ["token", "newPassword"],
+};
+
 export const createGroupRequestSchema: SchemaObject = {
   type: "object",
   properties: {

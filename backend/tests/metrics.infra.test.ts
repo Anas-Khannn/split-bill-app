@@ -178,6 +178,8 @@ describe("Observability catalog", () => {
       "cache_failures_total",
       "queue_failures_total",
       "database_connection_errors_total",
+      "emails_sent_total",
+      "email_send_failures_total",
     ]) {
       const kind = name === "http_request_duration_seconds" ? "histogram" : "counter";
       expect(rendered).toContain(`# TYPE ${name} ${kind}`);

@@ -56,6 +56,8 @@ export const METRIC = {
   cacheFailuresTotal: "cache_failures_total",
   queueFailuresTotal: "queue_failures_total",
   databaseConnectionErrorsTotal: "database_connection_errors_total",
+  emailsSentTotal: "emails_sent_total",
+  emailSendFailuresTotal: "email_send_failures_total",
 } as const;
 
 export type MetricName = (typeof METRIC)[keyof typeof METRIC];
@@ -378,6 +380,18 @@ const DEFAULT_METRICS: MetricDefinition[] = [
     kind: "counter",
     name: METRIC.databaseConnectionErrorsTotal,
     help: "Total number of PostgreSQL connection failures at startup.",
+  },
+  {
+    kind: "counter",
+    name: METRIC.emailsSentTotal,
+    help: "Total number of transactional auth emails successfully dispatched, by bounded operation name.",
+    labelKeys: [METRIC_LABEL.operation],
+  },
+  {
+    kind: "counter",
+    name: METRIC.emailSendFailuresTotal,
+    help: "Total number of transactional auth email dispatch failures, by bounded operation name.",
+    labelKeys: [METRIC_LABEL.operation],
   },
 ];
 
