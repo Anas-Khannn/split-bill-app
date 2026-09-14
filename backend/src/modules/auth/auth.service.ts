@@ -164,9 +164,15 @@ export class AuthService {
       }
     }
 
+    // Changing the email address invalidates the previous verification: the
+    // new address must be verified again, so the stored marker is cleared.
+    const emailChanged =
+      data.email !== undefined && data.email.toLowerCase() !== user.email.toLowerCase();
+
     const updated = await this.repository.update(userId, {
       name: data.name,
       email: data.email,
+      ...(emailChanged ? { emailVerifiedAt: null } : {}),
     });
     if (!updated) {
       throw new NotFoundError(APP_ERRORS.USER_NOT_FOUND, "User not found.");
@@ -310,9 +316,33 @@ export class AuthService {
   verifyToken(token: string): JwtPayload {
     const env = getEnv();
     try {
-      const payload = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
-      return payload;
+      // The algorithm is pinned to HS256 so a token signed with a different
+      // (e.g. asymmetric) algorithm is rejected outright instead of being
+      // interpreted with the symmetric secret as attacker-chosen algorithm.
+      const payload = jwt.verify(token, env.JWT_SECRET, {
+        algorithms: ["HS256"],
+      }) as jwt.JwtPayload;
+
+      // A valid JWT does not imply a meaningful subject: require exactly the
+      // shape we sign (string sub + email) so a token with a missing/odd sub
+      // can never be confused with an authenticated user.
+      if (
+        typeof payload.sub !== "string" ||
+        payload.sub.length === 0 ||
+        typeof payload.email !== "string" ||
+        payload.email.length === 0
+      ) {
+        throw new UnauthorizedError(
+          APP_ERRORS.TOKEN_INVALID,
+          "Invalid or malformed token.",
+        );
+      }
+
+      return { sub: payload.sub, email: payload.email };
     } catch (error) {
+      if (error instanceof UnauthorizedError) {
+        throw error;
+      }
       const err = error as jwt.JsonWebTokenError;
       if (err.name === "TokenExpiredError") {
         throw new UnauthorizedError(
@@ -354,6 +384,7 @@ export class AuthService {
     const payload: JwtPayload = { sub: user.id, email: user.email };
     return jwt.sign(payload, env.JWT_SECRET, {
       expiresIn: env.JWT_EXPIRES_IN,
+      algorithm: "HS256",
     } as jwt.SignOptions);
   }
 

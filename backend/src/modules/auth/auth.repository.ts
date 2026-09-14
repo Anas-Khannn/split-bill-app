@@ -101,7 +101,10 @@ export class AuthRepository {
    * throwing when the user no longer exists, so the service can produce a
    * `USER_NOT_FOUND` error without leaking a Prisma failure code.
    */
-  async update(id: string, data: { name?: string; email?: string }): Promise<AuthUser | null> {
+  async update(
+    id: string,
+    data: { name?: string; email?: string; emailVerifiedAt?: Date | null },
+  ): Promise<AuthUser | null> {
     const existing = await prisma.user.findUnique({
       where: { id },
       select: { id: true },
@@ -115,6 +118,7 @@ export class AuthRepository {
       data: {
         name: data.name,
         email: data.email,
+        emailVerifiedAt: data.emailVerifiedAt,
       },
     });
     return toAuthUser(user);
