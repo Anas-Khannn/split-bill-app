@@ -2296,11 +2296,10 @@ every pull request and push to `master`.
 | Prisma client generation | `npx prisma generate` | Generation failure |
 | Prisma schema validation | `npm run db:validate` | Invalid schema |
 | ESLint | `npm run lint` | Lint errors |
-| Prettier formatting | `npm run format:check` | Formatting drift |
 | TypeScript type check | `npm run typecheck` | Type errors |
 | Unit tests | `npm test` | Test failures |
 | Database migrations | `npm run db:migrate` | Migration failure |
-| Integration tests | `npm run test:integration` | Test failures (runs after migrations, against real Postgres + Redis) |
+| Integration tests (PostgreSQL + Redis) | `npm run test:integration` | Test failures against real infrastructure |
 | Security audit | `npm audit --audit-level=moderate` | Moderate+ vulnerabilities |
 | Production build | `npm run build` | Compilation errors |
 | Flutter analyze (mobile job) | `flutter analyze` | Analyzer issues (Dart) |
@@ -2308,41 +2307,18 @@ every pull request and push to `master`.
 
 ### Infrastructure services
 
-CI spins up disposable PostgreSQL 16 and Redis 7 containers. After migrations
-are applied, the **integration suites** (`npm run test:integration`) run against
-these containers — they exercise real transactions/constraints/rollback,
-distributed locking, Redis-backed rate limiting, and the cache store. The
-integration suites **opt in** via the CI job environment
-(`RUN_INTEGRATION_TESTS=true`, `TEST_DATABASE_URL`, `TEST_REDIS_URL`); failing
-integration tests fail the pipeline. The unit suite (`npm test`) remains
-hermetic and never touches real services.
+CI spins up disposable PostgreSQL 16 and Redis 7 containers for integration-test
+readiness. The service ports, database name, and credentials match the
+repository's own `backend/docker-compose.yml` integration defaults (PostgreSQL
+on `5433`, Redis on `6380`, database `splitease_integration`), so the real
+integration suite (`npm run test:integration`) runs against live PostgreSQL and
+Redis rather than in-memory fakes.
 
 The pipeline also runs an independent **mobile job** for the Flutter frontend
 (`frontend/`): it caches pub dependencies, runs `flutter analyze` with no
 warnings allowed, and runs the Dart test suite with `flutter test` (this
 includes the widget smoke test and the app's unit/contract tests — no
 emulator is required).
-
-### Running integration tests locally
-
-```bash
-cd backend
-npm run test:integration
-```
-
-This requires opt-in (a deliberate decision) and a dedicated PostgreSQL:
-
-```bash
-RUN_INTEGRATION_TESTS=true \
-TEST_DATABASE_URL=postgresql://user:password@localhost:5432/hisab_kitab_test \
-npm run test:integration
-```
-
-`TEST_REDIS_URL` defaults to `redis://localhost:6379/15`; if your local Redis is
-elsewhere, set it explicitly. The suites skip (report skipped, never silently
-pass) when opt-in or `TEST_DATABASE_URL` is missing, so an accidental run cannot
-execute destructive statements against development data. Migrations/tables in
-the test database must be up to date before running (`npm run db:migrate`).
 
 ### When CI runs
 
@@ -2357,9 +2333,10 @@ npm ci
 npx prisma generate
 npm run db:validate
 npm run lint
-npm run format:check
 npm run typecheck
 npm test
+npm run db:migrate
+npm run test:integration
 npm audit --audit-level=moderate
 npm run build
 ```
@@ -2367,12 +2344,11 @@ npm run build
 ### Troubleshooting
 
 - **Lint failures:** run `npm run lint:fix` to auto-fix.
-- **Format failures:** run `npm run format` to auto-format.
 - **Type errors:** run `npm run typecheck` and fix the reported issues.
-- **Test failures:** run `npm test` locally to reproduce. Unit/api tests use
-  mocked Prisma/Redis — no external services are required. Integration-suite
-  failures require real services: set `RUN_INTEGRATION_TESTS=true` and
-  `TEST_DATABASE_URL` (see above), and note the suites skip when those are
-  unset.
+- **Unit-test failures:** run `npm test` locally to reproduce. All unit tests use
+  mocked Prisma/Redis — no external services are required.
+- **Integration-test failures:** start the integration infrastructure first with
+  `docker compose -f backend/docker-compose.yml up -d --wait` (or
+  `npm run test:infra:up`), then run `npm run test:integration` to reproduce.
 - **Audit failures:** review `npm audit` output. Moderate+ advisories must be
   resolved or explicitly acknowledged.

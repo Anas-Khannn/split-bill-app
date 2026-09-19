@@ -52,19 +52,16 @@ describe("Redis-backed rate limiting", () => {
     clearRateLimitEnv();
   });
 
-  // `/health` and `/metrics` are mounted before the limiter (probes must never
-  // be throttled), so the general limiter is drained through a real `/api/v1`
-  // route, which 401s without a token instead of 429ing.
   it("limits requests through the Redis store when Redis is available", async () => {
     setRateLimitEnv({ RATE_LIMIT_MAX: "3" });
     const redis = new FakeRedis();
     const app = createApp({ redis });
 
     for (let i = 0; i < 3; i++) {
-      expect((await request(app).get("/api/v1/groups")).status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect((await request(app).get("/health")).status).toBe(HTTP_STATUSES.OK);
     }
 
-    const blocked = await request(app).get("/api/v1/groups");
+    const blocked = await request(app).get("/health");
     expect(blocked.status).toBe(HTTP_STATUSES.TOO_MANY_REQUESTS);
     expect(blocked.body).toEqual({ success: false, message: "Too many requests" });
   });
@@ -74,7 +71,7 @@ describe("Redis-backed rate limiting", () => {
     const redis = new FakeRedis();
     const app = createApp({ redis });
 
-    await request(app).get("/api/v1/groups");
+    await request(app).get("/health");
 
     const keys = [...redis.store.keys()];
     expect(keys.some((key) => key.startsWith("rl:api:"))).toBe(true);
@@ -86,7 +83,7 @@ describe("Redis-backed rate limiting", () => {
     const redis = new FakeRedis();
     const app = createApp({ redis });
 
-    await request(app).get("/api/v1/groups");
+    await request(app).get("/health");
     const afterHealth = [...redis.store.keys()];
     expect(afterHealth.some((key) => key.startsWith("rl:api:"))).toBe(true);
     expect(afterHealth.some((key) => key.startsWith("rl:auth:"))).toBe(false);
@@ -103,10 +100,10 @@ describe("Redis-backed rate limiting", () => {
     const appB = createApp({ redis });
 
     for (let i = 0; i < 3; i++) {
-      expect((await request(appA).get("/api/v1/groups")).status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+      expect((await request(appA).get("/health")).status).toBe(HTTP_STATUSES.OK);
     }
 
-    const blockedOnAppB = await request(appB).get("/api/v1/groups");
+    const blockedOnAppB = await request(appB).get("/health");
     expect(blockedOnAppB.status).toBe(HTTP_STATUSES.TOO_MANY_REQUESTS);
   });
 
@@ -114,8 +111,8 @@ describe("Redis-backed rate limiting", () => {
     setRateLimitEnv({ RATE_LIMIT_MAX: "1" });
     const app = createApp({ redis: new FakeRedis() });
 
-    await request(app).get("/api/v1/groups");
-    const blocked = await request(app).get("/api/v1/groups");
+    await request(app).get("/health");
+    const blocked = await request(app).get("/health");
 
     expect(blocked.status).toBe(HTTP_STATUSES.TOO_MANY_REQUESTS);
     expect(Number(blocked.headers["ratelimit-limit"])).toBe(1);
@@ -128,12 +125,14 @@ describe("Redis-backed rate limiting", () => {
     setRateLimitEnv({ RATE_LIMIT_MAX: "1", RATE_LIMIT_WINDOW_MS: "150" });
     const app = createApp({ redis: new FakeRedis() });
 
-    expect((await request(app).get("/api/v1/groups")).status).toBe(HTTP_STATUSES.UNAUTHORIZED);
-    expect((await request(app).get("/api/v1/groups")).status).toBe(HTTP_STATUSES.TOO_MANY_REQUESTS);
+    expect((await request(app).get("/health")).status).toBe(HTTP_STATUSES.OK);
+    expect((await request(app).get("/health")).status).toBe(
+      HTTP_STATUSES.TOO_MANY_REQUESTS,
+    );
 
     await new Promise((resolve) => setTimeout(resolve, 250));
 
-    expect((await request(app).get("/api/v1/groups")).status).toBe(HTTP_STATUSES.UNAUTHORIZED);
+    expect((await request(app).get("/health")).status).toBe(HTTP_STATUSES.OK);
   });
 
   it("keeps rate-limit state independent per client IP in Redis", async () => {

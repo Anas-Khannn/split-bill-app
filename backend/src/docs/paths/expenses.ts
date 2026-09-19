@@ -101,10 +101,11 @@ const expensesPaths: Record<string, PathItemObject> = {
         },
       },
       responses: {
-        201: jsonResponse("The expense was created with its splits.", expenseData("Expense"), {
-          success: true,
-          data: { expense: expenseExample },
-        }),
+        201: jsonResponse(
+          "The expense was created with its splits.",
+          expenseData("Expense"),
+          { success: true, data: { expense: expenseExample } },
+        ),
         400: componentResponse("BadRequest"),
         401: componentResponse("Unauthorized"),
         403: componentResponse("Forbidden"),
@@ -174,10 +175,11 @@ const expensesPaths: Record<string, PathItemObject> = {
       operationId: "getExpense",
       parameters: [expenseIdPathParameter],
       responses: {
-        200: jsonResponse("The expense with its splits.", expenseData("Expense"), {
-          success: true,
-          data: { expense: expenseExample },
-        }),
+        200: jsonResponse(
+          "The expense with its splits.",
+          expenseData("Expense"),
+          { success: true, data: { expense: expenseExample } },
+        ),
         401: componentResponse("Unauthorized"),
         403: componentResponse("Forbidden"),
         404: componentResponse("NotFound"),

@@ -217,7 +217,7 @@ describe("API documentation routes", () => {
       for (const method of checkable) {
         const documentedMatch = Object.entries(document.paths).some(
           ([path, item]) =>
-item[method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete"] &&
+            item[method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete"] &&
             path.endsWith(leaf),
         );
         expect(

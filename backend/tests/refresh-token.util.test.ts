@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 
-import { generateRefreshToken, hashRefreshToken } from "../src/modules/auth/refresh-token.util.js";
+import {
+  generateRefreshToken,
+  hashRefreshToken,
+} from "../src/modules/auth/refresh-token.util.js";
 
 describe("refresh token utility", () => {
   it("generates unique high-entropy opaque tokens", () => {

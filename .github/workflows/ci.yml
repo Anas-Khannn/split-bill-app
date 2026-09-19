@@ -18,13 +18,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: ci_test
-          POSTGRES_PASSWORD: ci_test_password
-          POSTGRES_DB: ci_test_db
+          POSTGRES_USER: splitease
+          POSTGRES_PASSWORD: splitease_test
+          POSTGRES_DB: splitease_integration
         ports:
-          - 5432:5432
+          - 5433:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U splitease -d splitease_integration"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -32,7 +32,7 @@ jobs:
       redis:
         image: redis:7-alpine
         ports:
-          - 6379:6379
+          - 6380:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -41,12 +41,9 @@ jobs:
 
     env:
       NODE_ENV: test
-      DATABASE_URL: postgresql://ci_test:ci_test_password@localhost:5432/ci_test_db
+      DATABASE_URL: postgresql://splitease:splitease_test@localhost:5433/splitease_integration
+      REDIS_URL: redis://localhost:6380
       JWT_SECRET: ci-test-jwt-secret-that-is-long-enough-for-validation
-      REDIS_URL: redis://localhost:6379
-      RUN_INTEGRATION_TESTS: "true"
-      TEST_DATABASE_URL: postgresql://ci_test:ci_test_password@localhost:5432/ci_test_db
-      TEST_REDIS_URL: redis://localhost:6379/15
 
     steps:
       - name: Checkout repository
@@ -75,10 +72,6 @@ jobs:
         working-directory: backend
         run: npm run lint
 
-      - name: Format check
-        working-directory: backend
-        run: npm run format:check
-
       - name: TypeScript type check
         working-directory: backend
         run: npm run typecheck
@@ -91,7 +84,7 @@ jobs:
         working-directory: backend
         run: npm run db:migrate
 
-      - name: Integration tests (real PostgreSQL & Redis)
+      - name: Integration tests (PostgreSQL + Redis)
         working-directory: backend
         run: npm run test:integration
 

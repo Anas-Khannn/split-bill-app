@@ -53,7 +53,9 @@ function resolveStore(
   prefix: string,
   windowMs: number,
 ): Store | undefined {
-  return redis === undefined ? undefined : new RedisRateLimitStore({ redis, prefix, windowMs });
+  return redis === undefined
+    ? undefined
+    : new RedisRateLimitStore({ redis, prefix, windowMs });
 }
 
 /**
