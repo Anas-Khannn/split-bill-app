@@ -41,7 +41,7 @@ class AuthRepository {
   /// Attempts to rotate the stored refresh token into a fresh session pair.
   /// Returns the new session when one is now persisted, or `null` on failure.
   Future<AuthSession?> refreshSession() async {
-    final refreshToken = _tokenStore.refreshToken;
+    final refreshToken = await _tokenStore.readRefreshToken();
     if (refreshToken == null || refreshToken.isEmpty) return null;
     try {
       final session = await _remote.refresh(refreshToken: refreshToken);
@@ -58,7 +58,7 @@ class AuthRepository {
   Future<UserProfile> getMe() => _remote.getMe();
 
   Future<void> logout() async {
-    final refreshToken = _tokenStore.refreshToken;
+    final refreshToken = await _tokenStore.readRefreshToken();
     try {
       if (refreshToken != null && refreshToken.isNotEmpty) {
         await _remote.logout(refreshToken: refreshToken);

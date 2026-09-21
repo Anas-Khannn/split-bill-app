@@ -1,10 +1,9 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:split_bill_app/core/errors/app_failure.dart';
 import 'package:split_bill_app/core/network/api_client.dart';
 import 'package:split_bill_app/core/network/auth_token_store.dart';
-import 'package:split_bill_app/core/storage/local_storage.dart';
+import 'package:split_bill_app/core/storage/secure_storage.dart';
 
 import '../helpers/fake_http_adapter.dart';
 
@@ -15,9 +14,8 @@ void main() {
   var refreshCount = 0;
   var expiredCount = 0;
 
-  setUp(() async {
-    SharedPreferences.setMockInitialValues({});
-    tokenStore = AuthTokenStore(LocalStorage(await SharedPreferences.getInstance()));
+  setUp(() {
+    tokenStore = AuthTokenStore(InMemorySecureStorage());
     refreshCount = 0;
     expiredCount = 0;
 
@@ -80,9 +78,7 @@ void main() {
   });
 
   test('GET 401 with a failed refresh expires the session and does not retry', () async {
-    final failingStore = AuthTokenStore(
-      LocalStorage(await SharedPreferences.getInstance()),
-    );
+    final failingStore = AuthTokenStore(InMemorySecureStorage());
     await failingStore.saveSession(accessToken: 'stale', refreshToken: 'refresh-1');
 
     final failingDio = Dio(BaseOptions(baseUrl: 'http://test.local'));
@@ -104,7 +100,7 @@ void main() {
     );
     expect(refreshCount, 1);
     expect(expiredCount, 1);
-    expect(failingStore.hasStoredSession, isFalse);
+    expect(await failingStore.hasStoredSession(), isFalse);
   });
 
   test('mutations (POST) are never auto-retried on 401', () async {

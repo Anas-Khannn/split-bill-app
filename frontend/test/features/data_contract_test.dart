@@ -33,6 +33,35 @@ void main() {
   Map<String, Object?> wrapped(String key, Object? value) =>
       envelope({key: value});
 
+  Map<String, Object?> expenseSummaryJson(String id) => {
+    'id': id,
+    'groupId': 'g1',
+    'paidById': 'u1',
+    'description': 'Dinner $id',
+    'amountMinorUnits': 1000,
+    'currencyCode': 'PKR',
+    'splitType': 'EQUAL',
+    'expenseDate': '2026-06-01T10:00:00Z',
+    'createdAt': '2026-06-01T10:00:00Z',
+    'updatedAt': '2026-06-01T10:00:00Z',
+    'payer': {'id': 'u1', 'name': 'Ali', 'email': 'a@b.c'},
+    'splitCount': 2,
+  };
+
+  Map<String, Object?> settlementJson(String id) => {
+    'id': id,
+    'groupId': 'g1',
+    'payerId': 'u1',
+    'payeeId': 'u2',
+    'amountMinorUnits': 1000,
+    'currencyCode': 'PKR',
+    'settledAt': '2026-06-01T10:00:00Z',
+    'createdAt': '2026-06-01T10:00:00Z',
+    'updatedAt': '2026-06-01T10:00:00Z',
+    'payer': {'id': 'u1', 'name': 'Ali', 'email': 'a@b.c'},
+    'payee': {'id': 'u2', 'name': 'Sana', 'email': 's@b.c'},
+  };
+
   test('auth login posts credentials and parses the session', () async {
     adapter.handle = (o) => o.path == '/auth/login'
         ? FakeResponse(
@@ -246,6 +275,42 @@ void main() {
     expect(expenses.single.payer.name, 'Ali');
   });
 
+  test('expense list pages through all pages when the server paginates', () async {
+    final pageSize = ExpensesRemoteDataSource.pageSize;
+    var calls = 0;
+    adapter.handle = (o) {
+      if (o.path != '/groups/g1/expenses') return null;
+      calls++;
+      final page = o.queryParameters['page'];
+      if (page == 1) {
+        return FakeResponse(
+          200,
+          {
+            'success': true,
+            'data': {'expenses': List.generate(pageSize, (i) => expenseSummaryJson('e$i'))},
+            'pagination': {'page': 1, 'limit': pageSize, 'total': pageSize + 1},
+          },
+        );
+      }
+      return FakeResponse(
+        200,
+        {
+          'success': true,
+          'data': {'expenses': [expenseSummaryJson('last')]},
+          'pagination': {'page': 2, 'limit': pageSize, 'total': pageSize + 1},
+        },
+      );
+    };
+
+    final expenses = await ExpensesRemoteDataSource(client).getGroupExpenses('g1');
+
+    expect(expenses, hasLength(pageSize + 1));
+    expect(calls, 2);
+    final pages = adapter.requests.map((r) => r.queryParameters['page']).toList();
+    expect(pages, containsAll([1, 2]));
+    expect(expenses.last.id, 'last');
+  });
+
   test('balances parse signed creditor/debtor semantics', () async {
     adapter.handle = (o) => o.path == '/groups/g1/balances'
         ? FakeResponse(
@@ -309,6 +374,43 @@ void main() {
 
     final settlements = await SettlementsRemoteDataSource(client).getGroupSettlements('g1');
     expect(settlements, isEmpty);
+  });
+
+  test('settlement list pages through all pages when the server paginates', () async {
+    final pageSize = SettlementsRemoteDataSource.pageSize;
+    var calls = 0;
+    adapter.handle = (o) {
+      if (o.path != '/groups/g1/settlements') return null;
+      calls++;
+      final page = o.queryParameters['page'];
+      if (page == 1) {
+        return FakeResponse(
+          200,
+          {
+            'success': true,
+            'data': {
+              'settlements': List.generate(pageSize, (i) => settlementJson('s$i')),
+            },
+            'pagination': {'page': 1, 'limit': pageSize, 'total': pageSize + 1},
+          },
+        );
+      }
+      return FakeResponse(
+        200,
+        {
+          'success': true,
+          'data': {'settlements': [settlementJson('last')]},
+          'pagination': {'page': 2, 'limit': pageSize, 'total': pageSize + 1},
+        },
+      );
+    };
+
+    final settlements =
+        await SettlementsRemoteDataSource(client).getGroupSettlements('g1');
+
+    expect(settlements, hasLength(pageSize + 1));
+    expect(calls, 2);
+    expect(settlements.last.id, 'last');
   });
 
   test('activity feed requests pagination query and parses events + pagination', () async {

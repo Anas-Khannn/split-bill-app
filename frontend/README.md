@@ -124,7 +124,7 @@ lib/
 │   ├── constants/ # AppTextStyles
 │   ├── errors/    # AppFailure hierarchy
 │   ├── network/   # ApiClient, ApiEnvelope, AuthTokenStore, IdempotencyKey
-│   ├── storage/   # LocalStorage (SharedPreferences wrapper)
+│   ├── storage/   # SecureStorage (flutter_secure_storage wrapper)
 │   ├── theme/     # colors, spacing, text styles
 │   ├── ui/        # reusable widgets + animation primitives
 │   └── utils/     # Money, splitEqually
@@ -143,9 +143,10 @@ lib/
 
 ## Known Limitations
 
-- Token storage uses `SharedPreferences` (plain text on disk). The abstraction
-  layer (`AuthTokenStore` → `LocalStorage`) is designed for a drop-in swap to
-  `flutter_secure_storage` for encrypted at-rest storage on rooted devices.
+- Sessions are stored **encrypted at rest** via `flutter_secure_storage`
+  (Keychain on iOS, Keystore-backed on Android), behind the `SecureStorage`
+  abstraction in `core/storage/`. Tests inject an in-memory fake, and DI wires
+  the real plugin in production (`configureDependencies`).
 - The receipt flow is a UI scaffold — camera/scanner integration is TBD.
 - Activity creation errors (stderr from get_it) are non-fatal — the catch block
   degrades gracefully in the home page.

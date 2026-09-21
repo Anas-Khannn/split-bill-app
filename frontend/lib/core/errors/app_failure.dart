@@ -32,6 +32,13 @@ class UnauthorizedFailure extends AppFailure {
   ]);
 }
 
+/// The user is recognized but not permitted to perform the action (403).
+class ForbiddenFailure extends AppFailure {
+  const ForbiddenFailure([
+    super.message = 'You do not have permission to do that.',
+  ]);
+}
+
 class ValidationFailure extends AppFailure {
   const ValidationFailure([
     super.message = 'Please check the information you entered.',

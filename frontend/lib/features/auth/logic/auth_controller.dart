@@ -41,7 +41,7 @@ class AuthController extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
 
   /// Whether a previously stored session exists; drives the splash decision.
-  bool get hasStoredSession => _repository.tokenStore.hasStoredSession;
+  Future<bool> hasStoredSession() => _repository.tokenStore.hasStoredSession();
 
   /// Restores a persisted session at app launch. A stored session is only
   /// considered valid once the server confirms the access token (via
@@ -52,7 +52,7 @@ class AuthController extends ChangeNotifier {
     _errorMessage = null;
     notifyListeners();
 
-    if (!_repository.tokenStore.hasStoredSession) {
+    if (!await _repository.tokenStore.hasStoredSession()) {
       _setUnauthenticated();
       return;
     }
